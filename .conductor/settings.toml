@@ -1,0 +1,17 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+setup = "if [ \"$CONDUCTOR_IS_LOCAL\" = \"1\" ]; then xcodebuild -project PocketControlLab.xcodeproj -scheme PocketControlLab -configuration Debug -destination \"platform=macOS,arch=$(uname -m)\" -derivedDataPath .build/ConductorDerivedData build; else true; fi"
+archive = "true"
+run_mode = "nonconcurrent"
+
+[scripts.run.app]
+available_in = ["local"]
+command = "xcodebuild -project PocketControlLab.xcodeproj -scheme PocketControlLab -configuration Debug -destination \"platform=macOS,arch=$(uname -m)\" -derivedDataPath .build/ConductorDerivedData build && open -W .build/ConductorDerivedData/Build/Products/Debug/PocketControlLab.app"
+default = true
+icon = "play"
+
+[scripts.run.build]
+available_in = ["local"]
+command = "xcodebuild -project PocketControlLab.xcodeproj -scheme PocketControlLab -configuration Debug -destination \"platform=macOS,arch=$(uname -m)\" -derivedDataPath .build/ConductorDerivedData build"
+icon = "wrench"
