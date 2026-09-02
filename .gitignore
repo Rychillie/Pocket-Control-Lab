@@ -1,0 +1,25 @@
+# macOS Finder metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode user-specific state and local indexes
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+DerivedData/
+build/
+*.xcarchive
+*.dSYM
+
+# Swift build products
+.build/
+
+# Local diagnostics and secrets
+*.log
+PocketControlLab-*.txt
+.env
+.env.*
+!.env.example
