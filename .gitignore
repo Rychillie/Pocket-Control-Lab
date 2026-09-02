@@ -23,3 +23,6 @@ PocketControlLab-*.txt
 .env
 .env.*
 !.env.example
+
+# Local Conductor overrides
+.conductor/settings.local.toml
