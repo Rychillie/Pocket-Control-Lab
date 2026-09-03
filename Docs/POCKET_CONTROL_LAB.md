@@ -17,18 +17,47 @@ visual humana.
 
 | Área | Local | Responsabilidade |
 | --- | --- | --- |
-| App / estado | `PocketControlLab/App` | coordena permissão, descoberta, sessão, inspeção, logs e trava de escrita |
+| App / ciclo de vida | `PocketControlLab/App` | retém o único `DeviceSession` e encaminha launch, sleep, wake e terminação |
+| Sessão | `PocketControlLab/App` | coordena descoberta, permissão, preview, inspeção, logs, snapshots e trava de escrita |
 | Modelos | `PocketControlLab/Models` | dispositivo, formatos, ranges UVC, snapshots e diffs |
 | Preview | `PocketControlLab/Camera` | `AVCaptureDevice`, `AVCaptureSession` e `AVCaptureVideoPreviewLayer` em SwiftUI |
 | USB | `PocketControlLab/USB` | leitura do IORegistry, ponte UVC estritamente validada, controles padrão e XU |
 | Investigação | `PocketControlLab/Investigation` | log local e snapshots/diff |
-| UI | `PocketControlLab/UI` | uma janela de laboratório sem lógica USB nas views |
+| UI | `PocketControlLab/UI` | views que solicitam intenções semânticas, sem possuir monitor, preview ou transporte |
 
-O monitor USB faz polling leve de propriedades já publicadas pelo IORegistry a
-cada 1,5 s. Ele não abre nem reivindica interfaces USB. Isso permite atualizar
-conexão/desconexão sem competir com a arquitetura de câmera do macOS.
+O `DeviceSession` é `@MainActor`, observável e com escopo do app; todas as
+scenes recebem a mesma sessão. O monitor USB faz polling leve de propriedades
+já publicadas pelo IORegistry a cada 1,5 s. Ele não abre nem reivindica
+interfaces USB. Isso permite atualizar conexão/desconexão sem competir com a
+arquitetura de câmera do macOS.
 
-A descoberta começa antes da resposta da permissão de câmera. Ela distingue:
+## Ciclo da sessão
+
+| Intenção | Tipo | Efeito permitido |
+| --- | --- | --- |
+| `startPassiveDiscovery()` | passiva | inicia ou preserva somente o monitor IORegistry; não solicita TCC, não inicia preview e não faz I/O UVC |
+| `stopPassiveDiscovery()` | segurança | executa o teardown seguro completo, inclusive parar o preview quando aplicável |
+| `requestCameraPermission()` | ação do operador | consulta/solicita somente o acesso de câmera do macOS |
+| `requestPreviewStart()` | ação do operador | para uma Pocket 4 confirmada, solicita permissão se necessária e só então inicia preview local |
+| `stopPreview()` | ação do operador/segurança | encerra somente o preview ativo, sem habilitar writes |
+| `refreshReadOnlyInspection()` | ação do operador, somente leitura | executa apenas GETs validados para a conexão atual |
+
+A descoberta passiva começa uma vez no launch e permanece independente da
+permissão de câmera. Ela nunca inicia outro `AVCaptureSession`, faz inspeção
+UVC ou envia `SET_CUR`. A negação de permissão deixa a descoberta ativa e o
+preview parado. Nenhuma ação de ciclo de vida habilita writes ou agenda
+movimento.
+
+Em wake, o app reinicia somente `startPassiveDiscovery()`: não retoma preview,
+inspeção, snapshots ou writes. `stopPassiveDiscovery()`, lock explícito,
+desconexão, re-enumeração, sleep e terminação usam a mesma transição idempotente
+para estado seguro: desabilitam a trava de escrita, cancelam inspeção, refresh
+de selector, snapshots e writes com debounce, descartam resultados obsoletos,
+invalidam o transporte antes de ativar uma substituição e param o preview quando
+necessário. O token `locationID`/`registryID`/geração impede que trabalho
+atrasado alcance uma câmera re-enumerada na mesma porta.
+
+A descoberta passiva distingue:
 
 - **Pocket 4 confirmada:** o par VID `0x2CA3`/PID `0x0023` e uma identidade de
   produto publicada contendo `OsmoPocket4`; é o único perfil que pode chegar
@@ -57,10 +86,14 @@ a outra câmera conectada.
 1. Abra [PocketControlLab.xcodeproj](../PocketControlLab.xcodeproj) no Xcode.
 2. Selecione o scheme `PocketControlLab` e o destino **My Mac**.
 3. Conecte a Pocket 4 por USB-C e selecione **Webcam Mode** na câmera.
-4. Execute o app e aceite a permissão de câmera quando solicitada.
-5. Confirme `Pocket 4 Connected`, o preview e os dados USB/AVFoundation.
-6. Aguarde o fim da descoberta somente-leitura; use **Refresh Investigation**
-   se necessário.
+4. Execute o app. Ele inicia somente a descoberta passiva, sem solicitar
+   permissão, iniciar preview ou fazer requests UVC.
+5. Confirme `Pocket 4 Connected` e os dados USB publicados pelo IORegistry.
+6. Se desejar preview, escolha **Start Preview**; aceite a permissão de câmera
+   somente se o macOS a solicitar após essa ação.
+7. Use **Refresh Read-Only Inspection** para iniciar uma inspeção UVC somente-leitura
+   manual. Desbloqueie writes apenas quando estiver pronto para observar a
+   câmera e registrar o resultado.
 
 Após abrir uma revisão do projeto que altere a estrutura de grupos, feche e
 reabra o projeto no Xcode antes de executar. Isso recarrega o Project
@@ -81,7 +114,9 @@ consulte [PRODUCT_DIRECTION.md](PRODUCT_DIRECTION.md),
 
 ## Fluxo UVC seguro
 
-Na inicialização, o app faz apenas leituras permitidas:
+Na inicialização, o app não faz request UVC. **Refresh Read-Only Inspection** é uma
+ação manual e, para a conexão Pocket 4 confirmada atual, faz somente as
+leituras permitidas:
 
 - Camera Terminal, entidade 1/interface VideoControl 0: `GET_INFO`,
   `GET_MIN`, `GET_MAX`, `GET_RES`, `GET_DEF`, `GET_CUR` para Zoom Absolute
@@ -90,10 +125,11 @@ Na inicialização, o app faz apenas leituras permitidas:
   retornado for válido, `GET_CUR` para os selectors candidatos 1, 2 e 3.
 
 Se, e somente se, os GETs diretos retornarem um range completo, válido e
-`GET_INFO` anunciar GET+SET, a caixa **Enable UVC writes** pode ser habilitada
-manualmente. Há uma segunda trava no transporte: ela começa desligada e rejeita
-todo `SET_CUR` até a opção explícita estar ligada. As únicas escritas possíveis
-no código são `SET_CUR` para os três controles Camera Terminal acima.
+`GET_INFO` anunciar GET+SET, a ação explícita de desbloquear writes pode ser
+usada manualmente. Há uma segunda trava no transporte: ela começa desligada e
+rejeita todo `SET_CUR` até o desbloqueio explícito estar ligado. As únicas
+escritas possíveis no código são `SET_CUR` para os três controles Camera
+Terminal acima.
 
 Para Pan/Tilt o payload UVC é validado como dois `Int32` little-endian. A
 alteração de um eixo lê/preserva o outro eixo por `GET_CUR`; nunca zera o eixo
@@ -112,7 +148,8 @@ são mostrados como candidatos; não são tratados como comandos conhecidos.
 
 Não existe caminho de `SET_CUR` para a Extension Unit nesta versão. **Capture
 Snapshot A** e **Capture Snapshot B** preservam os bytes de `GET_CUR` de cada
-selector e mostram o diff por byte. O procedimento é capturar A, alterar algo
+selector e mostram o diff por byte. São ações explícitas do operador, nunca
+efeitos da descoberta passiva. O procedimento é capturar A, alterar algo
 manualmente na tela da Pocket, capturar B e observar apenas as diferenças, sem
 inferir semântica automaticamente.
 

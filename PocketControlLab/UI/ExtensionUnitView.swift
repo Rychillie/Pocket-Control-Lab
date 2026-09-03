@@ -1,10 +1,10 @@
 import SwiftUI
 
 struct ExtensionUnitView: View {
-    @Bindable var lab: PocketLabModel
+    @Bindable var session: DeviceSession
 
     private var hasValidatedPocket4Profile: Bool {
-        lab.device?.supportsPocket4ControlProfile == true
+        session.device?.supportsPocket4ControlProfile == true
     }
 
     var body: some View {
@@ -22,36 +22,36 @@ struct ExtensionUnitView: View {
                     Spacer()
 
                     Button("Capture Snapshot A") {
-                        lab.captureSnapshotA()
+                        session.captureSnapshotA()
                     }
-                    .disabled(lab.isCapturingSnapshot || !hasValidatedPocket4Profile)
+                    .disabled(session.isCapturingSnapshot || !hasValidatedPocket4Profile)
 
                     Button("Capture Snapshot B") {
-                        lab.captureSnapshotB()
+                        session.captureSnapshotB()
                     }
-                    .disabled(lab.isCapturingSnapshot || !hasValidatedPocket4Profile)
+                    .disabled(session.isCapturingSnapshot || !hasValidatedPocket4Profile)
                 }
 
                 Text("The descriptor anomaly is intentionally retained: bNumControls = 2 while bmControls = 0x07. Selectors 1, 2, and 3 are candidates only. This build contains no Extension Unit SET_CUR path.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                if lab.device != nil, !hasValidatedPocket4Profile {
+                if session.device != nil, !hasValidatedPocket4Profile {
                     Text("Disabled: the detected DJI Osmo Pocket does not have a validated Pocket 4 Extension Unit profile.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
 
-                ForEach(lab.extensionUnitSelectors) { selector in
+                ForEach(session.extensionUnitSelectors) { selector in
                     ExtensionUnitSelectorView(
                         selector: selector,
                         isRefreshAvailable: hasValidatedPocket4Profile,
-                        refresh: { lab.refreshExtensionSelector(selector.selector) }
+                        refresh: { session.refreshExtensionSelector(selector.selector) }
                     )
                     Divider()
                 }
 
-                if let diff = lab.extensionDiff {
+                if let diff = session.extensionDiff {
                     ExtensionUnitDiffView(diff: diff)
                 } else {
                     Text("Capture A, change something manually on the Pocket screen, then capture B to inspect byte-level changes.")

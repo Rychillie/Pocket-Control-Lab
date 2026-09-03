@@ -3,9 +3,96 @@ import Foundation
 import Observation
 import UniformTypeIdentifiers
 
+protocol SessionClock: Sendable {
+    func sleep(nanoseconds: UInt64) async throws
+}
+
+struct SystemSessionClock: SessionClock {
+    func sleep(nanoseconds: UInt64) async throws {
+        try await Task.sleep(nanoseconds: nanoseconds)
+    }
+}
+
+/// All platform-facing collaborators owned by a DeviceSession. The default
+/// bundle uses the production AVFoundation, IORegistry, and direct-UVC paths;
+/// the internal initializer lets the M0 test target replace every operation
+/// that could otherwise touch hardware or TCC.
+@MainActor
+struct DeviceSessionDependencies {
+    let makeMonitor: (@escaping @MainActor (PocketDevice?) -> Void) -> any DeviceMonitoring
+    let camera: any CameraAccessing
+    /// The live app supplies its one preview renderer. Tests use `nil` and a
+    /// fake `PreviewControlling`, so no AVCaptureSession is constructed.
+    let previewController: CameraPreviewController?
+    let preview: any PreviewControlling
+    let transport: any UVCTransporting
+    let standardControls: any StandardControlInspecting
+    let extensionUnit: any ExtensionUnitInspecting
+    let clock: any SessionClock
+
+    static func live() -> DeviceSessionDependencies {
+        let transport = DirectUVCTransport()
+        let previewController = CameraPreviewController()
+        return DeviceSessionDependencies(
+            makeMonitor: { onChange in
+                PocketUSBRegistryMonitor(onChange: onChange)
+            },
+            camera: LiveCameraAccess(),
+            previewController: previewController,
+            preview: previewController,
+            transport: transport,
+            standardControls: UVCStandardControls(transport: transport),
+            extensionUnit: DJIExtensionUnitInspector(transport: transport),
+            clock: SystemSessionClock()
+        )
+    }
+}
+
+/// Thread-safe write lease used by `DirectUVCTransport` immediately before a
+/// SET_CUR. Revocation and the bridge operation share one mutex, so an
+/// explicit lock completes only after an already-authorized bridge call has
+/// finished, or blocks the bridge call entirely.
+private final class SessionWriteAuthorizer: @unchecked Sendable, UVCWriteAuthorizing {
+    private let lock = NSLock()
+    private var permittedConnection: UVCTransportConnection?
+
+    func grant(for connection: UVCTransportConnection) {
+        lock.lock()
+        defer { lock.unlock() }
+        permittedConnection = connection
+    }
+
+    func revoke() {
+        lock.lock()
+        defer { lock.unlock() }
+        permittedConnection = nil
+    }
+
+    func revoke(ifMatches connection: UVCTransportConnection) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard permittedConnection == connection else {
+            return
+        }
+        permittedConnection = nil
+    }
+
+    func performIfPermitted(
+        for connection: UVCTransportConnection,
+        operation: @Sendable () -> UVCRequestResult
+    ) -> UVCRequestResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard permittedConnection == connection else {
+            return nil
+        }
+        return operation()
+    }
+}
+
 @MainActor
 @Observable
-final class PocketLabModel {
+final class DeviceSession {
     private enum PanTiltAxis: Hashable {
         case pan
         case tilt
@@ -26,84 +113,89 @@ final class PocketLabModel {
     var requestedPan: Double?
     var requestedTilt: Double?
     var requestedRoll: Double?
-    var isWriteModeEnabled = false {
-        didSet {
-            guard isWriteModeEnabled else {
-                Task { [directTransport] in
-                    await directTransport.disableWrites()
-                }
-                logger.log("UVC_WRITE_MODE_DISABLED")
-                return
-            }
-
-            guard canEnableUVCWrites, let connection = activeTransportConnection else {
-                isWriteModeEnabled = false
-                logger.log("UVC_WRITE_MODE_REJECTED", writeAvailabilityDescription)
-                return
-            }
-
-            Task { [directTransport] in
-                await directTransport.setWritesEnabled(true, for: connection)
-            }
-            logger.log("UVC_WRITE_MODE_ENABLED", "Only validated Camera Terminal Zoom, Pan/Tilt, and Roll SET_CUR requests are allowed.")
-        }
-    }
+    private(set) var isWriteModeEnabled = false
+    private(set) var isPreviewRunning = false
 
     let logger = InvestigationLogger()
-    let previewController = CameraPreviewController()
+    let previewController: CameraPreviewController?
 
-    @ObservationIgnored private let directTransport: DirectUVCTransport
-    @ObservationIgnored private let standardControlService: UVCStandardControls
-    @ObservationIgnored private let extensionUnitService: DJIExtensionUnitInspector
-    @ObservationIgnored private var usbMonitor: PocketUSBRegistryMonitor?
-    @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
+    @ObservationIgnored private let dependencies: DeviceSessionDependencies
+    @ObservationIgnored private let directTransport: any UVCTransporting
+    @ObservationIgnored private let standardControlService: any StandardControlInspecting
+    @ObservationIgnored private let extensionUnitService: any ExtensionUnitInspecting
+    @ObservationIgnored private let preview: any PreviewControlling
+    @ObservationIgnored private let writeAuthorizer = SessionWriteAuthorizer()
+    @ObservationIgnored private var usbMonitor: (any DeviceMonitoring)?
+    @ObservationIgnored private var passiveDiscoveryGeneration: UInt64 = 0
+    @ObservationIgnored private var permissionTask: Task<Void, Never>?
     @ObservationIgnored private var inspectionTask: Task<Void, Never>?
+    @ObservationIgnored private var inspectionTaskID: UUID?
     @ObservationIgnored private var snapshotTask: Task<Void, Never>?
     @ObservationIgnored private var snapshotTaskID: UUID?
+    @ObservationIgnored private var selectorRefreshTasks: [UInt8: Task<Void, Never>] = [:]
+    @ObservationIgnored private var selectorRefreshTaskIDs: [UInt8: UUID] = [:]
     @ObservationIgnored private var writeTasks: [UVCControlID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var writeTaskIDs: [UVCControlID: UUID] = [:]
+    @ObservationIgnored private var writeModeTask: Task<Void, Never>?
+    @ObservationIgnored private var writeModeTaskID: UUID?
+    @ObservationIgnored private var transportSafetyTask: Task<Void, Never>?
+    @ObservationIgnored private var transportSafetyTaskID: UUID?
     @ObservationIgnored private var pendingPanTiltAxes: Set<PanTiltAxis> = []
     @ObservationIgnored private var connectionGeneration: UInt64 = 0
+    @ObservationIgnored private var transitionTask: Task<Void, Never>?
+    @ObservationIgnored private var previewStartRequestedWhilePermissionPending = false
+    @ObservationIgnored private var hasLoggedSessionStart = false
 
-    init() {
-        let directTransport = DirectUVCTransport()
-        self.directTransport = directTransport
-        standardControlService = UVCStandardControls(transport: directTransport)
-        extensionUnitService = DJIExtensionUnitInspector(transport: directTransport)
+    convenience init() {
+        self.init(dependencies: .live())
     }
 
-    func start() {
-        guard bootstrapTask == nil else {
+    init(dependencies: DeviceSessionDependencies) {
+        self.dependencies = dependencies
+        previewController = dependencies.previewController
+        preview = dependencies.preview
+        directTransport = dependencies.transport
+        standardControlService = dependencies.standardControls
+        extensionUnitService = dependencies.extensionUnit
+    }
+
+    /// Passive: starts only the IORegistry monitor. It never requests camera
+    /// permission, starts preview, activates direct UVC, or sends SET_CUR.
+    func startPassiveDiscovery() {
+        guard usbMonitor == nil else {
             return
         }
 
-        logger.log("APP_STARTED", "No UVC SET_CUR request is sent automatically.")
-        // USB discovery is intentionally independent of TCC camera access. It
-        // only reads published IORegistry properties and lets the app show a
-        // connected Pocket even when preview permission is denied.
-        startUSBMonitoring()
-
-        bootstrapTask = Task { [weak self] in
-            guard let self else {
-                return
-            }
-
-            logger.log("CAMERA_PERMISSION_REQUESTED")
-            let authorization = await CameraDiscovery.requestVideoAccess()
-            guard !Task.isCancelled else {
-                return
-            }
-
-            cameraAuthorization = authorization
-            logger.log("CAMERA_PERMISSION_RESULT", authorization.displayName)
-
-            if authorization == .authorized {
-                previewStatus = "Searching for a compatible DJI Osmo Pocket camera"
-            } else {
-                previewStatus = "Camera permission \(authorization.displayName.lowercased())"
-            }
-
-            reconcileCameraAuthorization()
+        if !hasLoggedSessionStart {
+            hasLoggedSessionStart = true
+            logger.log("SESSION_STARTED", "Passive discovery starts without camera permission, preview, UVC I/O, or SET_CUR.")
         }
+
+        passiveDiscoveryGeneration &+= 1
+        let discoveryGeneration = passiveDiscoveryGeneration
+        let monitor = dependencies.makeMonitor { [weak self] device in
+            self?.handleUSBDeviceChange(device, discoveryGeneration: discoveryGeneration)
+        }
+        usbMonitor = monitor
+        logger.log("USB_REGISTRY_MONITOR_STARTED", "Polling cached IORegistry properties every 1.5 seconds; no USB interface is opened.")
+        monitor.start()
+    }
+
+    /// Safety: stops passive monitoring and tears down the active hardware
+    /// session. A later wake/restart remains passive until the user acts.
+    func stopPassiveDiscovery() {
+        // Retire callbacks from this monitor before another wake can create a
+        // replacement monitor. A queued old callback then has no owner.
+        passiveDiscoveryGeneration &+= 1
+        usbMonitor?.stop()
+        usbMonitor = nil
+        transitionTask?.cancel()
+        enterSafeState(
+            reason: "PASSIVE_DISCOVERY_STOPPED",
+            clearDevice: true,
+            stopPreview: true
+        )
+        previewStatus = "Passive discovery stopped"
     }
 
     var isPocketConnected: Bool {
@@ -158,7 +250,49 @@ final class PocketLabModel {
         )
     }
 
-    func refreshInspection() {
+    /// User-initiated: requests TCC video access only. It does not start
+    /// preview or issue a UVC request by itself.
+    func requestCameraPermission() {
+        requestCameraPermission(startPreviewWhenAuthorized: false)
+    }
+
+    /// User-initiated: starts a local preview for the current verified Pocket
+    /// 4. If camera access is undecided, this explicit action requests it
+    /// first; passive discovery never does.
+    func requestPreviewStart() {
+        guard let device, device.supportsPocket4ControlProfile else {
+            previewStatus = "Connect a verified Pocket 4 before starting preview"
+            logger.log("PREVIEW_SKIPPED", "A verified Pocket 4 USB profile is required.")
+            return
+        }
+
+        switch cameraAuthorization {
+        case .authorized:
+            configurePreview(for: device)
+        case .notDetermined:
+            previewStartRequestedWhilePermissionPending = true
+            requestCameraPermission(startPreviewWhenAuthorized: true)
+        case .denied, .restricted:
+            previewStatus = "Camera permission \(cameraAuthorization.displayName.lowercased())"
+            logger.log("PREVIEW_NOT_STARTED", "Camera permission is \(cameraAuthorization.displayName).")
+        }
+    }
+
+    /// User-initiated: stops only the visible preview and leaves passive
+    /// discovery intact.
+    func stopPreview() {
+        // Permission itself is user-initiated and may continue resolving, but
+        // a stop cancels the pending request to start preview afterward.
+        previewStartRequestedWhilePermissionPending = false
+        preview.stop()
+        isPreviewRunning = false
+        previewStatus = "Preview stopped"
+        logger.log("PREVIEW_STOPPED")
+    }
+
+    /// User-initiated and read-only: performs the validated UVC GET sequence
+    /// for the current verified connection. It never sends SET_CUR.
+    func refreshReadOnlyInspection() {
         guard let device, device.supportsPocket4ControlProfile,
               let connection = activeTransportConnection
         else {
@@ -169,6 +303,81 @@ final class PocketLabModel {
         startInspection(for: device, connection: connection)
     }
 
+    /// Compatibility for the existing command surface. New callers should use
+    /// the explicit read-only intent above.
+    func refreshInspection() {
+        refreshReadOnlyInspection()
+    }
+
+    /// Semantic write-mode entry point for SwiftUI controls. Enabling the
+    /// latch is never a write; a later, deliberate control interaction is.
+    func setWriteModeEnabled(_ enabled: Bool) {
+        enabled ? unlockWrites() : lockWrites()
+    }
+
+    func unlockWrites() {
+        guard canEnableUVCWrites, let connection = activeTransportConnection else {
+            isWriteModeEnabled = false
+            logger.log("UVC_WRITE_MODE_REJECTED", writeAvailabilityDescription)
+            return
+        }
+
+        writeModeTask?.cancel()
+        let taskID = UUID()
+        let precedingSafetyTask = transportSafetyTask
+        writeModeTaskID = taskID
+        isWriteModeEnabled = true
+        writeModeTask = Task { [weak self, directTransport] in
+            await precedingSafetyTask?.value
+            guard let self,
+                  !Task.isCancelled,
+                  self.isWriteModeEnabled,
+                  self.activeTransportConnection == connection,
+                  self.writeModeTaskID == taskID
+            else {
+                return
+            }
+
+            await directTransport.activate(connection)
+            guard !Task.isCancelled,
+                  self.isWriteModeEnabled,
+                  self.activeTransportConnection == connection,
+                  self.writeModeTaskID == taskID
+            else {
+                // This condition only changes the latch if this stale task
+                // still owns the active connection; it cannot disable a newer
+                // connection that was activated after re-enumeration.
+                await directTransport.setWritesEnabled(false, for: connection)
+                return
+            }
+            self.writeAuthorizer.grant(for: connection)
+            await directTransport.setWritesEnabled(true, for: connection)
+            guard !Task.isCancelled,
+                  self.isWriteModeEnabled,
+                  self.activeTransportConnection == connection,
+                  self.writeModeTaskID == taskID
+            else {
+                self.writeAuthorizer.revoke(ifMatches: connection)
+                await directTransport.setWritesEnabled(false, for: connection)
+                return
+            }
+            self.writeModeTask = nil
+            self.writeModeTaskID = nil
+        }
+        logger.log("UVC_WRITE_MODE_ENABLED", "Only validated Camera Terminal Zoom, Pan/Tilt, and Roll SET_CUR requests are allowed.")
+    }
+
+    /// Explicit lock is idempotent. It shares the cancellation and transport
+    /// latch cleanup primitive with disconnect and lifecycle teardown while
+    /// retaining the current passive connection and preview.
+    func lockWrites() {
+        enterSafeState(
+            reason: "UVC_WRITE_MODE_DISABLED",
+            clearDevice: false,
+            stopPreview: false
+        )
+    }
+
     func refreshExtensionSelector(_ selector: UInt8) {
         guard let device, device.supportsPocket4ControlProfile,
               let connection = activeTransportConnection
@@ -177,13 +386,31 @@ final class PocketLabModel {
             return
         }
 
-        Task { [weak self] in
+        selectorRefreshTasks[selector]?.cancel()
+        let taskID = UUID()
+        selectorRefreshTaskIDs[selector] = taskID
+        selectorRefreshTasks[selector] = Task { [weak self] in
             guard let self else {
                 return
             }
 
+            guard !Task.isCancelled,
+                  self.activeTransportConnection == connection,
+                  self.selectorRefreshTaskIDs[selector] == taskID
+            else {
+                return
+            }
+            await directTransport.activate(connection)
+            guard !Task.isCancelled, self.activeTransportConnection == connection,
+                  self.selectorRefreshTaskIDs[selector] == taskID
+            else {
+                return
+            }
+
             let refreshed = await extensionUnitService.refresh(selector: selector, connection: connection)
-            guard self.activeTransportConnection == connection
+            guard !Task.isCancelled,
+                  self.activeTransportConnection == connection,
+                  self.selectorRefreshTaskIDs[selector] == taskID
             else {
                 return
             }
@@ -192,6 +419,8 @@ final class PocketLabModel {
                 extensionUnitSelectors[index] = refreshed
             }
             logExtensionSelector(refreshed)
+            selectorRefreshTasks[selector] = nil
+            selectorRefreshTaskIDs[selector] = nil
         }
     }
 
@@ -281,136 +510,202 @@ final class PocketLabModel {
         }
     }
 
-    private func startUSBMonitoring() {
-        guard usbMonitor == nil else {
+    private func requestCameraPermission(startPreviewWhenAuthorized: Bool) {
+        if startPreviewWhenAuthorized {
+            previewStartRequestedWhilePermissionPending = true
+        }
+
+        guard permissionTask == nil else {
             return
         }
 
-        let monitor = PocketUSBRegistryMonitor { [weak self] device in
-            self?.handleUSBDeviceChange(device)
-        }
-        usbMonitor = monitor
-        logger.log("USB_REGISTRY_MONITOR_STARTED", "Polling cached IORegistry properties every 1.5 seconds; no USB interface is opened.")
-        monitor.start()
-    }
-
-    private func handleUSBDeviceChange(_ device: PocketDevice?) {
-        let previousDevice = self.device
-        let previousConnectionIdentity = previousDevice?.connectionIdentity
-        let newConnectionIdentity = device?.connectionIdentity
-        guard previousConnectionIdentity != newConnectionIdentity else {
-            self.device = device
-            return
-        }
-
-        // Invalidate the current transport before publishing a replacement
-        // device. All async inspection/write paths carry this generation and
-        // will fail closed if a camera re-enumerates at the same USB location.
-        connectionGeneration &+= 1
-        isWriteModeEnabled = false
-        writeTasks.values.forEach { $0.cancel() }
-        writeTasks.removeAll()
-        snapshotTask?.cancel()
-        snapshotTask = nil
-        snapshotTaskID = nil
-        isCapturingSnapshot = false
-        pendingPanTiltAxes.removeAll()
-        self.device = device
-
-        guard let device else {
-            guard previousDevice != nil else {
+        logger.log("CAMERA_PERMISSION_REQUESTED")
+        permissionTask = Task { [weak self] in
+            guard let self else {
                 return
             }
 
-            logger.log("DEVICE_DISCONNECTED")
-            previewController.stop()
-            cameraInfo = nil
+            let authorization = await dependencies.camera.requestVideoAccess()
+            guard !Task.isCancelled else {
+                return
+            }
+
+            cameraAuthorization = authorization
+            permissionTask = nil
+            logger.log("CAMERA_PERMISSION_RESULT", authorization.displayName)
+
+            let shouldStartPreview = previewStartRequestedWhilePermissionPending
+            previewStartRequestedWhilePermissionPending = false
+            if authorization == .authorized {
+                previewStatus = "Camera permission authorized — choose Start Preview"
+                if shouldStartPreview {
+                    requestPreviewStart()
+                }
+            } else {
+                previewStatus = "Camera permission \(authorization.displayName.lowercased())"
+            }
+        }
+    }
+
+    private func handleUSBDeviceChange(
+        _ replacement: PocketDevice?,
+        discoveryGeneration: UInt64
+    ) {
+        // A monitor callback may already be enqueued when passive discovery
+        // stops. It must not resurrect a device after the full safe teardown.
+        guard usbMonitor != nil,
+              passiveDiscoveryGeneration == discoveryGeneration
+        else {
+            return
+        }
+
+        let previousConnectionIdentity = device?.connectionIdentity
+        let replacementConnectionIdentity = replacement?.connectionIdentity
+        guard previousConnectionIdentity != replacementConnectionIdentity else {
+            // Changes to published metadata do not restart any session work.
+            device = replacement
+            return
+        }
+
+        transitionTask?.cancel()
+        let generation = enterSafeState(
+            reason: "DEVICE_CONNECTION_CHANGED",
+            clearDevice: true,
+            stopPreview: true
+        )
+
+        // Direct transport invalidation is awaited before a replacement is
+        // published. That ordering prevents any delayed request from binding
+        // to a re-enumerated camera at the same physical USB location.
+        transitionTask = Task { [weak self, directTransport] in
+            await directTransport.invalidate(upTo: generation)
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.finishDeviceTransition(to: replacement, generation: generation)
+        }
+    }
+
+    private func finishDeviceTransition(to replacement: PocketDevice?, generation: UInt64) {
+        guard connectionGeneration == generation else {
+            return
+        }
+
+        device = replacement
+        transitionTask = nil
+
+        guard let replacement else {
             previewStatus = "No DJI Osmo Pocket detected"
+            logger.log("DEVICE_DISCONNECTED")
+            return
+        }
+
+        logger.log("DEVICE_CONNECTED", replacement.identification.label)
+        logger.log("USB_IDENTITY", "VID=0x\(replacement.formattedVendorID) PID=0x\(replacement.formattedProductID)")
+        logger.log("USB_LINK", "\(replacement.linkSpeed.displayValue) · \(replacement.deviceState)")
+
+        guard replacement.supportsPocket4ControlProfile else {
+            let reason = "\(replacement.displayName) was detected automatically, but this build has no validated Pocket 4 UVC control profile for it."
+            logger.log("DEVICE_DETECTED_UNSUPPORTED_PROFILE", reason)
+            previewStatus = "\(replacement.displayName) detected — controls unavailable"
+            standardControls = UVCControlID.allCases.map {
+                UVCStandardControlState.unavailable(control: $0, reason: reason)
+            }
+            extensionUnitSelectors = (UInt8(1)...UInt8(3)).map {
+                ExtensionUnitSelectorState.unavailable(selector: $0, reason: reason)
+            }
+            return
+        }
+
+        previewStatus = "Pocket 4 connected — choose Start Preview or Refresh Read-Only Inspection"
+        logger.log("DEVICE_READY_FOR_EXPLICIT_ACTION")
+    }
+
+    @discardableResult
+    private func enterSafeState(
+        reason: String,
+        clearDevice: Bool,
+        stopPreview: Bool
+    ) -> UInt64 {
+        // A safe transition always retires the capability token, including an
+        // explicit lock on a still-connected device. That makes delayed
+        // inspection, snapshot, and write results stale even when the USB
+        // registry identity itself has not changed.
+        connectionGeneration &+= 1
+        let invalidationGeneration = connectionGeneration
+
+        isWriteModeEnabled = false
+        writeAuthorizer.revoke()
+        cancelPendingWork()
+        transportSafetyTask?.cancel()
+        let taskID = UUID()
+        transportSafetyTaskID = taskID
+        transportSafetyTask = Task { [weak self, directTransport] in
+            guard let self,
+                  !Task.isCancelled,
+                  self.transportSafetyTaskID == taskID
+            else {
+                return
+            }
+
+            // Invalidation also drops the transport's write latch. Passing a
+            // generation makes an old teardown a no-op for a newer activation.
+            await directTransport.invalidate(upTo: invalidationGeneration)
+            guard !Task.isCancelled,
+                  self.transportSafetyTaskID == taskID
+            else {
+                return
+            }
+            self.transportSafetyTask = nil
+            self.transportSafetyTaskID = nil
+        }
+
+        if stopPreview {
+            preview.stop()
+            isPreviewRunning = false
+        }
+
+        if clearDevice {
+            device = nil
+            cameraInfo = nil
             resetProtocolState(
                 controls: UVCControlID.allCases.map { UVCStandardControlState.idle(control: $0) },
                 selectors: (UInt8(1)...UInt8(3)).map { ExtensionUnitSelectorState.idle(selector: $0) }
             )
-
-            Task { [directTransport] in
-                await directTransport.invalidate()
-            }
-
-            return
         }
 
-        logger.log("DEVICE_CONNECTED", device.identification.label)
-        logger.log("USB_IDENTITY", "VID=0x\(device.formattedVendorID) PID=0x\(device.formattedProductID)")
-        logger.log("USB_LINK", "\(device.linkSpeed.displayValue) · \(device.deviceState)")
-
-        guard device.supportsPocket4ControlProfile else {
-            let reason = "\(device.displayName) was detected automatically, but this build has no validated Pocket 4 UVC control profile for it."
-            logger.log("DEVICE_DETECTED_UNSUPPORTED_PROFILE", reason)
-            previewController.stop()
-            cameraInfo = nil
-            previewStatus = "\(device.displayName) detected — controls unavailable"
-            resetProtocolState(
-                controls: UVCControlID.allCases.map { UVCStandardControlState.unavailable(control: $0, reason: reason) },
-                selectors: (UInt8(1)...UInt8(3)).map { ExtensionUnitSelectorState.unavailable(selector: $0, reason: reason) }
-            )
-
-            Task { [directTransport] in
-                await directTransport.invalidate()
-            }
-
-            return
-        }
-
-        guard cameraAuthorization != .notDetermined else {
-            previewStatus = "Waiting for camera permission"
-            logger.log("PREVIEW_WAITING_FOR_PERMISSION")
-            return
-        }
-
-        activateVerifiedPocket4(device)
+        logger.log(reason)
+        return connectionGeneration
     }
 
-    private func reconcileCameraAuthorization() {
-        guard let device, device.supportsPocket4ControlProfile else {
-            return
-        }
-
-        activateVerifiedPocket4(device)
-    }
-
-    private func activateVerifiedPocket4(_ device: PocketDevice) {
-        guard device.supportsPocket4ControlProfile else {
-            return
-        }
-
-        if cameraAuthorization == .authorized {
-            configurePreview(for: device)
-        } else {
-            previewStatus = "Camera permission \(cameraAuthorization.displayName.lowercased())"
-            logger.log("PREVIEW_NOT_STARTED", "Camera permission is \(cameraAuthorization.displayName).")
-        }
-
-        guard let connection = activeTransportConnection else {
-            logger.log("INSPECTION_SKIPPED", "IORegistry did not publish a Location ID.")
-            return
-        }
-        startInspection(for: device, connection: connection)
+    private func cancelPendingWork() {
+        permissionTask?.cancel()
+        permissionTask = nil
+        previewStartRequestedWhilePermissionPending = false
+        inspectionTask?.cancel()
+        inspectionTask = nil
+        inspectionTaskID = nil
+        selectorRefreshTasks.values.forEach { $0.cancel() }
+        selectorRefreshTasks.removeAll()
+        selectorRefreshTaskIDs.removeAll()
+        snapshotTask?.cancel()
+        snapshotTask = nil
+        snapshotTaskID = nil
+        writeTasks.values.forEach { $0.cancel() }
+        writeTasks.removeAll()
+        writeTaskIDs.removeAll()
+        writeModeTask?.cancel()
+        writeModeTask = nil
+        writeModeTaskID = nil
+        isInspecting = false
+        isCapturingSnapshot = false
+        pendingPanTiltAxes.removeAll()
     }
 
     private func resetProtocolState(
         controls: [UVCStandardControlState],
         selectors: [ExtensionUnitSelectorState]
     ) {
-        isWriteModeEnabled = false
-        isInspecting = false
-        isCapturingSnapshot = false
-        inspectionTask?.cancel()
-        inspectionTask = nil
-        snapshotTask?.cancel()
-        snapshotTask = nil
-        snapshotTaskID = nil
-        writeTasks.values.forEach { $0.cancel() }
-        writeTasks.removeAll()
-        pendingPanTiltAxes.removeAll()
         requestedZoom = nil
         requestedPan = nil
         requestedTilt = nil
@@ -422,21 +717,23 @@ final class PocketLabModel {
     }
 
     private func configurePreview(for device: PocketDevice) {
-        guard let camera = CameraDiscovery.pocketCamera(for: device) else {
+        guard let source = dependencies.camera.previewSource(for: device) else {
             cameraInfo = nil
             previewStatus = "Pocket 4 video device not visible to AVFoundation"
             logger.log("AVCAPTURE_DEVICE_NOT_FOUND")
             return
         }
 
-        cameraInfo = CameraDiscovery.describe(camera)
+        cameraInfo = source.cameraInfo
         logger.log("AVCAPTURE_DEVICE_FOUND", "Compatible external video device matched.")
 
         do {
-            try previewController.start(device: camera)
+            try preview.start(source: source)
+            isPreviewRunning = preview.isRunning
             previewStatus = "Preview started"
             logger.log("PREVIEW_STARTED", cameraInfo?.activeFormat.displayName)
         } catch {
+            isPreviewRunning = false
             previewStatus = "Preview failed: \(error.localizedDescription)"
             logger.log("PREVIEW_FAILED", error.localizedDescription)
         }
@@ -449,8 +746,10 @@ final class PocketLabModel {
         }
 
         inspectionTask?.cancel()
+        let taskID = UUID()
+        inspectionTaskID = taskID
         isInspecting = true
-        let cmioObservations = CMIOStandardControlInspector.inspect(camera: cameraInfo, pocket: device)
+        let cmioObservations = dependencies.camera.inspectStandardControls(camera: cameraInfo, pocket: device)
 
         if cmioObservations.isEmpty {
             logger.log("CMIO_CONTROLS_NOT_EXPOSED")
@@ -471,12 +770,18 @@ final class PocketLabModel {
             guard !Task.isCancelled else {
                 return
             }
-            await directTransport.invalidate()
-            guard !Task.isCancelled, self.activeTransportConnection == connection else {
+            await directTransport.invalidate(upTo: connection.generation)
+            guard !Task.isCancelled,
+                  self.activeTransportConnection == connection,
+                  self.inspectionTaskID == taskID
+            else {
                 return
             }
             await directTransport.activate(connection)
-            guard !Task.isCancelled, self.activeTransportConnection == connection else {
+            guard !Task.isCancelled,
+                  self.activeTransportConnection == connection,
+                  self.inspectionTaskID == taskID
+            else {
                 return
             }
 
@@ -486,7 +791,10 @@ final class PocketLabModel {
             )
             let extensionUnit = await extensionUnitService.inspectAll(connection: connection)
 
-            guard !Task.isCancelled, self.activeTransportConnection == connection else {
+            guard !Task.isCancelled,
+                  self.activeTransportConnection == connection,
+                  self.inspectionTaskID == taskID
+            else {
                 return
             }
 
@@ -495,6 +803,8 @@ final class PocketLabModel {
             pendingPanTiltAxes.removeAll()
             seedRequestedValues(from: controls)
             isInspecting = false
+            inspectionTask = nil
+            inspectionTaskID = nil
             logStandardControls(controls)
             extensionUnit.forEach(logExtensionSelector)
         }
@@ -514,6 +824,20 @@ final class PocketLabModel {
         isCapturingSnapshot = true
         snapshotTask = Task { [weak self] in
             guard let self else {
+                return
+            }
+
+            guard !Task.isCancelled,
+                  self.activeTransportConnection == connection,
+                  self.snapshotTaskID == taskID
+            else {
+                return
+            }
+            await directTransport.activate(connection)
+            guard !Task.isCancelled,
+                  self.activeTransportConnection == connection,
+                  self.snapshotTaskID == taskID
+            else {
                 return
             }
 
@@ -541,7 +865,7 @@ final class PocketLabModel {
     }
 
     private func scheduleWrite(for control: UVCControlID) {
-        guard isWriteModeEnabled else {
+        guard isWriteModeEnabled, let connection = activeTransportConnection else {
             logger.log("UVC_WRITE_SKIPPED", "Enable UVC writes before requesting \(control.displayName).")
             return
         }
@@ -552,48 +876,91 @@ final class PocketLabModel {
         }
 
         writeTasks[control]?.cancel()
-        writeTasks[control] = Task { [weak self] in
+        let taskID = UUID()
+        writeTaskIDs[control] = taskID
+        let clock = dependencies.clock
+        writeTasks[control] = Task { [weak self, clock] in
             do {
-                try await Task.sleep(nanoseconds: 75_000_000)
+                try await clock.sleep(nanoseconds: 75_000_000)
             } catch {
+                self?.finishScheduledWrite(for: control, taskID: taskID)
                 return
             }
 
             guard !Task.isCancelled else {
+                self?.finishScheduledWrite(for: control, taskID: taskID)
                 return
             }
-            await self?.performScheduledWrite(for: control)
+            await self?.performScheduledWrite(
+                for: control,
+                connection: connection,
+                taskID: taskID
+            )
         }
     }
 
-    private func performScheduledWrite(for control: UVCControlID) async {
-        guard isWriteModeEnabled,
-              let connection = activeTransportConnection,
+    private func performScheduledWrite(
+        for control: UVCControlID,
+        connection: UVCTransportConnection,
+        taskID: UUID
+    ) async {
+        guard !Task.isCancelled,
+              writeTaskIDs[control] == taskID,
+              isWriteModeEnabled,
+              activeTransportConnection == connection,
               let state = controlState(for: control),
               state.isWriteReady
         else {
+            finishScheduledWrite(for: control, taskID: taskID)
             return
         }
 
         // Defence in depth: the transport independently refuses SET_CUR unless
         // this explicit user-controlled mode is still enabled.
         await directTransport.setWritesEnabled(true, for: connection)
-        guard isWriteModeEnabled, activeTransportConnection == connection else {
+        guard !Task.isCancelled,
+              writeTaskIDs[control] == taskID,
+              isWriteModeEnabled,
+              activeTransportConnection == connection
+        else {
+            await directTransport.setWritesEnabled(false, for: connection)
+            finishScheduledWrite(for: control, taskID: taskID)
             return
         }
 
         switch (control, state.range) {
         case let (.zoom, .some(.scalar(range))):
             let requested = quantize(requestedZoom ?? Double(range.currentValue), range: range)
-            let outcome = await standardControlService.setScalar(control: .zoom, value: requested, connection: connection)
+            let outcome = await standardControlService.setScalar(
+                control: .zoom,
+                value: requested,
+                connection: connection,
+                writeAuthorization: writeAuthorizer
+            )
+            guard shouldApplyScheduledWrite(for: control, connection: connection, taskID: taskID) else {
+                finishScheduledWrite(for: control, taskID: taskID)
+                return
+            }
             applyWriteOutcome(outcome, for: connection)
+            finishScheduledWrite(for: control, taskID: taskID)
         case let (.roll, .some(.scalar(range))):
             let requested = quantize(requestedRoll ?? Double(range.currentValue), range: range)
-            let outcome = await standardControlService.setScalar(control: .roll, value: requested, connection: connection)
+            let outcome = await standardControlService.setScalar(
+                control: .roll,
+                value: requested,
+                connection: connection,
+                writeAuthorization: writeAuthorizer
+            )
+            guard shouldApplyScheduledWrite(for: control, connection: connection, taskID: taskID) else {
+                finishScheduledWrite(for: control, taskID: taskID)
+                return
+            }
             applyWriteOutcome(outcome, for: connection)
+            finishScheduledWrite(for: control, taskID: taskID)
         case let (.panTilt, .some(.vector(range))):
             let changedAxes = pendingPanTiltAxes
             guard !changedAxes.isEmpty else {
+                finishScheduledWrite(for: control, taskID: taskID)
                 return
             }
 
@@ -618,11 +985,41 @@ final class PocketLabModel {
                     resolution: Int64(range.resolution.second)
                 ).flatMap { Int32(exactly: $0) }
                 : nil
-            let outcome = await standardControlService.setPanTilt(pan: pan, tilt: tilt, connection: connection)
+            let outcome = await standardControlService.setPanTilt(
+                pan: pan,
+                tilt: tilt,
+                connection: connection,
+                writeAuthorization: writeAuthorizer
+            )
+            guard shouldApplyScheduledWrite(for: control, connection: connection, taskID: taskID) else {
+                finishScheduledWrite(for: control, taskID: taskID)
+                return
+            }
             applyWriteOutcome(outcome, for: connection)
+            finishScheduledWrite(for: control, taskID: taskID)
         default:
             logger.log("UVC_WRITE_SKIPPED", "\(control.displayName) has no compatible validated range.")
+            finishScheduledWrite(for: control, taskID: taskID)
         }
+    }
+
+    private func shouldApplyScheduledWrite(
+        for control: UVCControlID,
+        connection: UVCTransportConnection,
+        taskID: UUID
+    ) -> Bool {
+        !Task.isCancelled
+            && writeTaskIDs[control] == taskID
+            && isWriteModeEnabled
+            && activeTransportConnection == connection
+    }
+
+    private func finishScheduledWrite(for control: UVCControlID, taskID: UUID) {
+        guard writeTaskIDs[control] == taskID else {
+            return
+        }
+        writeTasks[control] = nil
+        writeTaskIDs[control] = nil
     }
 
     private func applyWriteOutcome(

@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 struct UVCControlsView: View {
-    @Bindable var lab: PocketLabModel
+    @Bindable var session: DeviceSession
 
     var body: some View {
         GroupBox {
@@ -13,26 +13,26 @@ struct UVCControlsView: View {
 
                     Spacer()
 
-                    Toggle("Enable UVC writes", isOn: $lab.isWriteModeEnabled)
+                    Toggle("Enable UVC writes", isOn: writeModeBinding)
                         .toggleStyle(.switch)
-                        .disabled(!lab.canEnableUVCWrites)
+                        .disabled(!session.canEnableUVCWrites)
                         .accessibilityHint("Writes remain off by default and only validated standard Camera Terminal controls can be sent.")
                 }
 
-                Text(lab.writeAvailabilityDescription)
+                Text(session.writeAvailabilityDescription)
                     .font(.caption)
-                    .foregroundStyle(lab.canEnableUVCWrites ? Color.secondary : Color.orange)
+                    .foregroundStyle(session.canEnableUVCWrites ? Color.secondary : Color.orange)
 
-                ForEach(lab.standardControls) { state in
+                ForEach(session.standardControls) { state in
                     StandardControlDiscoveryView(state: state)
 
                     switch state.control {
                     case .zoom:
-                        ZoomControlView(lab: lab, state: state)
+                        ZoomControlView(session: session, state: state)
                     case .panTilt:
-                        PanTiltControlView(lab: lab, state: state)
+                        PanTiltControlView(session: session, state: state)
                     case .roll:
-                        RollControlView(lab: lab, state: state)
+                        RollControlView(session: session, state: state)
                     }
 
                     if state.control != .roll {
@@ -56,10 +56,17 @@ struct UVCControlsView: View {
             Label("Safe UVC control lab", systemImage: "slider.horizontal.3")
         }
     }
+
+    private var writeModeBinding: Binding<Bool> {
+        Binding(
+            get: { session.isWriteModeEnabled },
+            set: { session.setWriteModeEnabled($0) }
+        )
+    }
 }
 
 private struct ZoomControlView: View {
-    @Bindable var lab: PocketLabModel
+    @Bindable var session: DeviceSession
     let state: UVCStandardControlState
 
     var body: some View {
@@ -76,7 +83,7 @@ private struct ZoomControlView: View {
                 Slider(
                     value: Binding(
                         get: { zoomValue },
-                        set: { lab.scheduleZoom($0) }
+                        set: { session.scheduleZoom($0) }
                     ),
                     in: Double(range.minimum)...Double(range.maximum),
                     step: Double(range.resolution)
@@ -84,7 +91,7 @@ private struct ZoomControlView: View {
                 .disabled(!isEnabled)
 
                 Button("Reset Zoom") {
-                    lab.resetZoom()
+                    session.resetZoom()
                 }
                 .disabled(!isEnabled)
             }
@@ -94,19 +101,19 @@ private struct ZoomControlView: View {
     }
 
     private var isEnabled: Bool {
-        lab.isWriteModeEnabled && state.isWriteReady
+        session.isWriteModeEnabled && state.isWriteReady
     }
 
     private var zoomValue: Double {
         guard case let .scalar(range)? = state.range else {
             return 0
         }
-        return lab.requestedZoom ?? Double(range.currentValue)
+        return session.requestedZoom ?? Double(range.currentValue)
     }
 }
 
 private struct PanTiltControlView: View {
-    @Bindable var lab: PocketLabModel
+    @Bindable var session: DeviceSession
     let state: UVCStandardControlState
 
     var body: some View {
@@ -118,8 +125,8 @@ private struct PanTiltControlView: View {
                 AxisSlider(
                     label: "Pan",
                     value: Binding(
-                        get: { lab.requestedPan ?? Double(range.currentValue.first) },
-                        set: { lab.schedulePan($0) }
+                        get: { session.requestedPan ?? Double(range.currentValue.first) },
+                        set: { session.schedulePan($0) }
                     ),
                     range: Double(range.minimum.first)...Double(range.maximum.first),
                     step: Double(range.resolution.first),
@@ -129,8 +136,8 @@ private struct PanTiltControlView: View {
                 AxisSlider(
                     label: "Tilt",
                     value: Binding(
-                        get: { lab.requestedTilt ?? Double(range.currentValue.second) },
-                        set: { lab.scheduleTilt($0) }
+                        get: { session.requestedTilt ?? Double(range.currentValue.second) },
+                        set: { session.scheduleTilt($0) }
                     ),
                     range: Double(range.minimum.second)...Double(range.maximum.second),
                     step: Double(range.resolution.second),
@@ -138,7 +145,7 @@ private struct PanTiltControlView: View {
                 )
 
                 Button("Reset Pan/Tilt") {
-                    lab.resetPanTilt()
+                    session.resetPanTilt()
                 }
                 .disabled(!isEnabled)
             }
@@ -148,12 +155,12 @@ private struct PanTiltControlView: View {
     }
 
     private var isEnabled: Bool {
-        lab.isWriteModeEnabled && state.isWriteReady
+        session.isWriteModeEnabled && state.isWriteReady
     }
 }
 
 private struct RollControlView: View {
-    @Bindable var lab: PocketLabModel
+    @Bindable var session: DeviceSession
     let state: UVCStandardControlState
 
     var body: some View {
@@ -170,7 +177,7 @@ private struct RollControlView: View {
                 Slider(
                     value: Binding(
                         get: { rollValue },
-                        set: { lab.scheduleRoll($0) }
+                        set: { session.scheduleRoll($0) }
                     ),
                     in: Double(range.minimum)...Double(range.maximum),
                     step: Double(range.resolution)
@@ -178,7 +185,7 @@ private struct RollControlView: View {
                 .disabled(!isEnabled)
 
                 Button("Reset Roll") {
-                    lab.resetRoll()
+                    session.resetRoll()
                 }
                 .disabled(!isEnabled)
             }
@@ -188,14 +195,14 @@ private struct RollControlView: View {
     }
 
     private var isEnabled: Bool {
-        lab.isWriteModeEnabled && state.isWriteReady
+        session.isWriteModeEnabled && state.isWriteReady
     }
 
     private var rollValue: Double {
         guard case let .scalar(range)? = state.range else {
             return 0
         }
-        return lab.requestedRoll ?? Double(range.currentValue)
+        return session.requestedRoll ?? Double(range.currentValue)
     }
 }
 
