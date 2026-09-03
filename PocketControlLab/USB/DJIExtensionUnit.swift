@@ -1,10 +1,15 @@
 import Foundation
 import IOKit
 
-actor DJIExtensionUnitInspector {
-    private let transport: DirectUVCTransport
+protocol ExtensionUnitInspecting: Sendable {
+    func inspectAll(connection: UVCTransportConnection) async -> [ExtensionUnitSelectorState]
+    func refresh(selector: UInt8, connection: UVCTransportConnection) async -> ExtensionUnitSelectorState
+}
 
-    init(transport: DirectUVCTransport) {
+actor DJIExtensionUnitInspector: ExtensionUnitInspecting {
+    private let transport: any UVCTransporting
+
+    init(transport: any UVCTransporting) {
         self.transport = transport
     }
 

@@ -1,27 +1,31 @@
 import SwiftUI
 
 struct ContentView: View {
-    @Bindable var lab: PocketLabModel
+    @Bindable var session: DeviceSession
 
     var body: some View {
         VStack(spacing: 0) {
-            LabHeaderView(device: lab.device, isInspecting: lab.isInspecting)
+            LabHeaderView(device: session.device, isInspecting: session.isInspecting)
 
             VSplitView {
                 HSplitView {
                     PreviewView(
-                        controller: lab.previewController,
-                        status: lab.previewStatus,
-                        cameraInfo: lab.cameraInfo
+                        controller: session.previewController,
+                        status: session.previewStatus,
+                        cameraInfo: session.cameraInfo,
+                        isPreviewRunning: session.isPreviewRunning,
+                        canStartPreview: session.device?.supportsPocket4ControlProfile == true,
+                        requestPreviewStart: session.requestPreviewStart,
+                        stopPreview: session.stopPreview
                     )
                     .frame(minWidth: 520, minHeight: 320)
 
                     DeviceInspectorView(
-                        device: lab.device,
-                        authorization: lab.cameraAuthorization,
-                        cameraInfo: lab.cameraInfo,
-                        controls: lab.standardControls,
-                        extensionUnitSelectors: lab.extensionUnitSelectors
+                        device: session.device,
+                        authorization: session.cameraAuthorization,
+                        cameraInfo: session.cameraInfo,
+                        controls: session.standardControls,
+                        extensionUnitSelectors: session.extensionUnitSelectors
                     )
                     .frame(minWidth: 300, idealWidth: 360)
                 }
@@ -29,31 +33,28 @@ struct ContentView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        UVCControlsView(lab: lab)
-                        ExtensionUnitView(lab: lab)
+                        UVCControlsView(session: session)
+                        ExtensionUnitView(session: session)
                     }
                     .padding()
                 }
                 .frame(minHeight: 300)
 
-                LogView(lab: lab)
+                LogView(session: session)
                     .frame(minHeight: 180)
             }
         }
         .frame(minWidth: 1_050, minHeight: 820)
-        .task {
-            lab.start()
-        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button("Refresh Investigation", systemImage: "arrow.clockwise") {
-                    lab.refreshInspection()
+                Button("Refresh Read-Only Inspection", systemImage: "arrow.clockwise") {
+                    session.refreshReadOnlyInspection()
                 }
-                .disabled(lab.device?.supportsPocket4ControlProfile != true)
+                .disabled(session.device?.supportsPocket4ControlProfile != true)
                 .accessibilityLabel("Refresh safe device and UVC inspection")
                 .accessibilityHint("Available only for the verified Pocket 4 USB control profile.")
 
-                Text(lab.isInspecting ? "Inspecting…" : "Read-only discovery")
+                Text(session.isInspecting ? "Inspecting…" : "Manual read-only inspection")
                     .foregroundStyle(.secondary)
             }
         }

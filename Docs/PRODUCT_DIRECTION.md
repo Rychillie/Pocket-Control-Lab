@@ -24,15 +24,19 @@ approval, and a privacy/security design.
 An operator should be able to:
 
 1. Connect a Pocket 4 in Webcam Mode.
-2. See a clear connection state and live preview.
-3. Know whether the app has a verified control profile or has merely detected
+2. See a clear passive connection state without a camera prompt or background
+   UVC probe.
+3. Explicitly choose to start preview, grant camera access if macOS requests
+   it, and see the resulting preview status.
+4. Know whether the app has a verified control profile or has merely detected
    an unsupported Pocket-family device.
-4. See each control's supported range, current value, and safety state.
-5. Deliberately enable writes and make a controlled Zoom, Pan, Tilt, or Roll
+5. Explicitly refresh a read-only inspection to see each control's supported
+   range, current value, and safety state.
+6. Deliberately unlock writes and make a controlled Zoom, Pan, Tilt, or Roll
    adjustment.
-6. See what was requested, what the camera returned, and a reminder to confirm
+7. See what was requested, what the camera returned, and a reminder to confirm
    the visible physical/digital effect.
-7. Export a privacy-aware diagnostic if something behaves unexpectedly.
+8. Export a privacy-aware diagnostic if something behaves unexpectedly.
 
 The experience should be calm and legible rather than clever: clear states,
 predictable failure, no hidden background movement, and no claim that a
@@ -58,6 +62,16 @@ request to work around a driver limitation.
 No write occurs by default. A person must enable write mode, and every write
 must remain constrained to a known control, validated range, rate limit, and
 currently connected device identity.
+
+### Explicit consent and safe lifecycle
+
+Launch and wake perform passive IORegistry discovery only. Camera permission
+and preview begin only after an operator requests preview; read-only UVC
+inspection begins only after an operator refreshes it. Locking, disconnect,
+re-enumeration, sleep, termination, and stopping discovery converge on one
+safe teardown that disables writes, cancels pending work, rejects stale
+results, invalidates the transport, and stops preview where required. Nothing
+automatically resumes preview, inspection, or writes after wake.
 
 ### Privacy by default
 
@@ -94,9 +108,12 @@ paths or a single session.
 ## Current position
 
 The project began as a USB/UVC investigation lab. It now has a working local
-foundation: automatic discovery, AVFoundation preview, guarded standard UVC
-controls, a read-only DJI Extension Unit inspector, detailed logging, and
-privacy-aware exports.
+foundation: one app-scoped `DeviceSession`, passive discovery at launch,
+operator-initiated AVFoundation preview, manual read-only UVC inspection,
+guarded standard UVC controls, a read-only DJI Extension Unit inspector,
+detailed logging, and privacy-aware exports. UI surfaces ask the shared
+session for semantic actions; they do not own a monitor, preview session, or
+transport.
 
 An operator has reported successful control of camera positioning from the Mac
 in an interactive session. This is valuable product-direction evidence, but it
@@ -109,6 +126,8 @@ response, and observed result.
 ### Phase 0 — Safe laboratory foundation (current)
 
 - Keep the protocol boundary narrow and observable.
+- Keep launch and wake passive; require explicit preview consent and manual
+  read-only inspection.
 - Gather real UVC ranges and response data without inventing semantics.
 - Capture Extension Unit snapshots only through read-only requests.
 - Make disconnect, permissions, and driver ownership fail safely.
@@ -158,6 +177,8 @@ plan, privacy assessment, and opt-in test implementation.
 - Driver termination, interface seizure, or bypassing `UVCAssistant`.
 - Automatic recentering through an unknown DJI command.
 - Cloud, accounts, analytics, tracking, or background network behavior.
+- Automatic permission requests, preview starts, UVC inspection, or writes at
+  launch, on reconnect, or after wake.
 - Inferring physical gimbal movement from a successful USB response.
 
 ## How contributors should make a proposal

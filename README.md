@@ -20,7 +20,9 @@ privacy, and safety design.
 The desired end state is an operator-focused macOS app that can:
 
 - detect a supported Pocket 4 automatically after it is connected by USB;
-- show a reliable live preview and clear device status;
+- show clear device status and start a live preview only after explicit
+  operator action and camera consent;
+- inspect compatible controls only through deliberate, read-only actions;
 - expose only controls whose protocol, range, and behavior have been verified;
 - let an operator position the camera deliberately from the Mac;
 - preserve an evidence trail for every control operation, including the camera
@@ -39,23 +41,31 @@ Read the full [product direction and roadmap](Docs/PRODUCT_DIRECTION.md).
 
 ## What works today
 
-- Automatic USB monitoring starts at app launch, independently of camera
-  permission, by polling published IORegistry properties every 1.5 seconds.
+- One app-scoped `DeviceSession` starts passive USB monitoring once at launch.
+  It polls published IORegistry properties every 1.5 seconds, independently of
+  camera permission. Passive discovery does not request permission, start a
+  preview, perform UVC I/O, or send a UVC write.
 - A **verified Pocket 4 control profile** requires the known `VID 2CA3` / `PID
   0023` pair and an observed normalized `OsmoPocket4` product token.
 - Other DJI Osmo Pocket-family devices can be shown as detected, but they are
   never allowed to enter the Pocket 4 UVC-control path.
-- AVFoundation can provide local video preview when macOS grants camera access
-  and a matching external camera is visible.
-- The app can attempt safe UVC discovery for Zoom Absolute, Pan/Tilt Absolute,
-  and Roll Absolute; macOS driver ownership can safely prevent direct access.
-- UVC writes remain off until an operator explicitly enables them, and only
-  those three whitelisted standard Camera Terminal controls can use `SET_CUR`.
+- **Start Preview** is explicit. It requests camera access only after the
+  operator acts (when needed), then starts a local preview only for a verified
+  Pocket 4. A denied permission leaves passive discovery active and preview
+  stopped.
+- **Refresh Read-Only Inspection** explicitly runs safe, read-only UVC inspection for
+  Zoom Absolute, Pan/Tilt Absolute, and Roll Absolute. macOS driver ownership
+  can safely prevent direct access; no inspection runs merely because the app
+  launched or a device connected.
+- UVC writes remain off until an operator explicitly unlocks them, and only
+  the three whitelisted standard Camera Terminal controls can use `SET_CUR`.
 - DJI Extension Unit selectors 1–3 are inspected read-only with `GET_INFO`,
   `GET_LEN`, and conditionally `GET_CUR`; there is no Extension Unit write
   path.
-- USB reconnect/re-enumeration invalidates pending work so a delayed request
-  cannot be applied to a replacement device at the same USB location.
+- Explicit lock, disconnect, re-enumeration, sleep, termination, and discovery
+  stop use the same safe teardown: writes are disabled, pending work is
+  cancelled, stale results are rejected, transport is invalidated, and preview
+  stops where required. Wake restarts passive discovery only.
 
 ## Safety is a product feature
 
@@ -69,7 +79,8 @@ force, or hide unsafe behavior:
 - no termination or disabling of `UVCAssistant`;
 - no Bluetooth, Wi-Fi, DJI Mimo, DUML, networking, analytics, telemetry, or
   video recording; and
-- no automatic UVC write at launch or on device connection.
+- no automatic permission request, preview start, UVC inspection, or UVC write
+  at launch, on device connection, or after wake.
 
 When macOS refuses direct UVC access because its own camera driver owns the
 interface, the app reports the block and leaves the device alone. A successful
@@ -79,28 +90,34 @@ the operator is asked to verify the observable effect.
 ## Architecture at a glance
 
 ```text
-SwiftUI UI
+App lifecycle owner
    │
-   ├── App state and safety latches
-   ├── AVFoundation preview
-   ├── IORegistry USB discovery
-   ├── guarded standard UVC transport
-   ├── read-only DJI Extension Unit inspector
-   └── local investigation log, snapshots, and diffs
+   └── shared DeviceSession
+          ├── SwiftUI scenes issue semantic intents
+          ├── AVFoundation preview
+          ├── passive IORegistry USB discovery
+          ├── guarded standard UVC transport
+          ├── read-only DJI Extension Unit inspector
+          └── local investigation log, snapshots, and diffs
 ```
 
-The UI never sends raw USB requests directly. The low-level bridge has a
-strict request whitelist, and the application state adds explicit opt-in,
-range validation, connection identity, and disconnect guards above it.
+The UI never owns a monitor, preview session, transport, or raw USB request.
+The low-level bridge has a strict request whitelist, and `DeviceSession` adds
+explicit operator intent, range validation, connection identity, and
+disconnect guards above it.
 
 ## Run locally
 
 1. Open `PocketControlLab.xcodeproj` in Xcode.
 2. Select the `PocketControlLab` scheme and **My Mac**.
 3. Connect the camera by USB-C and choose **Webcam Mode** on the camera.
-4. Run the app and grant camera permission for preview.
-5. Wait for read-only discovery to finish. Enable UVC writes only when you are
-   ready to observe the camera and record the result.
+4. Run the app. It begins passive USB discovery without prompting for camera
+   access, starting preview, or probing UVC controls.
+5. Once a verified Pocket 4 is shown, choose **Start Preview**. Grant camera
+   access only if macOS asks for it after that action.
+6. Choose **Refresh Read-Only Inspection** when you want a read-only UVC inspection.
+   Unlock UVC writes only when you are ready to observe the camera and record
+   the result.
 
 USB presence is detected even when camera permission is denied. A denied
 permission blocks preview; it does not prove that the physical camera is

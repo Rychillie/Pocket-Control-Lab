@@ -190,9 +190,13 @@ final class PocketUSBRegistryMonitor {
         let currentConnectionIdentity = currentDevice?.connectionIdentity
         guard currentConnectionIdentity != lastConnectionIdentity else {
             // Keep the most recent read-only metadata for a stable connection,
-            // but do not restart preview or UVC discovery when a transient
-            // IORegistry property changes.
+            // and forward it to the session without restarting preview or UVC
+            // discovery when a transient IORegistry property changes.
+            guard currentDevice != lastDevice else {
+                return
+            }
             lastDevice = currentDevice
+            onChange(currentDevice)
             return
         }
 
@@ -201,3 +205,13 @@ final class PocketUSBRegistryMonitor {
         onChange(currentDevice)
     }
 }
+
+/// The passive monitor has no control-plane privilege. This protocol exists
+/// solely so lifecycle tests can drive connection changes without IORegistry.
+@MainActor
+protocol DeviceMonitoring: AnyObject {
+    func start()
+    func stop()
+}
+
+extension PocketUSBRegistryMonitor: DeviceMonitoring {}

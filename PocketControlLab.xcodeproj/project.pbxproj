@@ -5,6 +5,16 @@
 	objectVersion = 56;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		A20000000000000000000700 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000001;
+			remoteInfo = PocketControlLab;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXBuildFile section */
 		A10000000000000000000101 /* PocketControlLabApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000201 /* PocketControlLabApp.swift */; };
 		A10000000000000000000102 /* PocketLabModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000202 /* PocketLabModel.swift */; };
@@ -26,10 +36,12 @@
 		A10000000000000000000112 /* UVCControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000213 /* UVCControlsView.swift */; };
 		A10000000000000000000113 /* ExtensionUnitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000214 /* ExtensionUnitView.swift */; };
 		A10000000000000000000114 /* LogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000215 /* LogView.swift */; };
+		A10000000000000000000115 /* CameraAccessing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000218 /* CameraAccessing.swift */; };
 		A10000000000000000000120 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000220 /* AVFoundation.framework */; };
 		A10000000000000000000121 /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000221 /* CoreMedia.framework */; };
 		A10000000000000000000122 /* CoreMediaIO.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000222 /* CoreMediaIO.framework */; };
 		A10000000000000000000123 /* IOKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000223 /* IOKit.framework */; };
+		A20000000000000000000101 /* PocketControlLabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000201 /* PocketControlLabTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -57,10 +69,13 @@
 		A10000000000000000000215 /* LogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogView.swift; sourceTree = "<group>"; };
 		A10000000000000000000216 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000217 /* POCKET_CONTROL_LAB.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = POCKET_CONTROL_LAB.md; sourceTree = "<group>"; };
+		A10000000000000000000218 /* CameraAccessing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAccessing.swift; sourceTree = "<group>"; };
 		A10000000000000000000220 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		A10000000000000000000221 /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 		A10000000000000000000222 /* CoreMediaIO.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMediaIO.framework; path = System/Library/Frameworks/CoreMediaIO.framework; sourceTree = SDKROOT; };
 		A10000000000000000000223 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
+		A20000000000000000000200 /* PocketControlLabTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PocketControlLabTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000201 /* PocketControlLabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketControlLabTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +90,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A20000000000000000000301 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -82,6 +104,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000401 /* PocketControlLab */,
+				A20000000000000000000400 /* PocketControlLabTests */,
 				A10000000000000000000404 /* Docs */,
 				A10000000000000000000402 /* Frameworks */,
 				A10000000000000000000403 /* Products */,
@@ -135,6 +158,7 @@
 			children = (
 				A10000000000000000000206 /* CameraDiscovery.swift */,
 				A10000000000000000000207 /* CameraPreview.swift */,
+				A10000000000000000000218 /* CameraAccessing.swift */,
 			);
 			path = Camera;
 			sourceTree = "<group>";
@@ -197,9 +221,18 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000200 /* PocketControlLab.app */,
+				A20000000000000000000200 /* PocketControlLabTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
+		};
+		A20000000000000000000400 /* PocketControlLabTests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000201 /* PocketControlLabTests.swift */,
+			);
+			path = PocketControlLabTests;
+			sourceTree = SOURCE_ROOT;
 		};
 /* End PBXGroup section */
 
@@ -219,6 +252,23 @@
 			productReference = A10000000000000000000200 /* PocketControlLab.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A20000000000000000000001 /* PocketControlLabTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A20000000000000000000500 /* Build configuration list for PBXNativeTarget "PocketControlLabTests" */;
+			buildPhases = (
+				A20000000000000000000300 /* Sources */,
+				A20000000000000000000301 /* Frameworks */,
+				A20000000000000000000302 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = (
+				A20000000000000000000800 /* PBXTargetDependency */,
+			);
+			name = PocketControlLabTests;
+			productName = PocketControlLabTests;
+			productReference = A20000000000000000000200 /* PocketControlLabTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -231,6 +281,10 @@
 				TargetAttributes = {
 					A10000000000000000000001 = {
 						CreatedOnToolsVersion = 26.0;
+					};
+					A20000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = A10000000000000000000001;
 					};
 				};
 			};
@@ -248,12 +302,19 @@
 			projectRoot = "";
 			targets = (
 				A10000000000000000000001 /* PocketControlLab */,
+				A20000000000000000000001 /* PocketControlLabTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A10000000000000000000302 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A20000000000000000000302 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = ();
@@ -286,10 +347,27 @@
 				A10000000000000000000112 /* UVCControlsView.swift in Sources */,
 				A10000000000000000000113 /* ExtensionUnitView.swift in Sources */,
 				A10000000000000000000114 /* LogView.swift in Sources */,
+				A10000000000000000000115 /* CameraAccessing.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A20000000000000000000300 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A20000000000000000000101 /* PocketControlLabTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A20000000000000000000800 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000001 /* PocketControlLab */;
+			targetProxy = A20000000000000000000700 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A10000000000000000000600 /* Debug */ = {
@@ -373,6 +451,46 @@
 			};
 			name = Release;
 		};
+		A20000000000000000000600 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.pocketcontrollab.PocketControlLabTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PocketControlLab.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PocketControlLab";
+				TEST_TARGET_NAME = PocketControlLab;
+			};
+			name = Debug;
+		};
+		A20000000000000000000601 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.pocketcontrollab.PocketControlLabTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PocketControlLab.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/PocketControlLab";
+				TEST_TARGET_NAME = PocketControlLab;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -390,6 +508,15 @@
 			buildConfigurations = (
 				A10000000000000000000610 /* Debug */,
 				A10000000000000000000611 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A20000000000000000000500 /* Build configuration list for PBXNativeTarget \"PocketControlLabTests\" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A20000000000000000000600 /* Debug */,
+				A20000000000000000000601 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

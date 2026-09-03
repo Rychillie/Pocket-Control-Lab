@@ -9,10 +9,29 @@ struct UVCWriteOutcome: Sendable {
     let resultingValue: UVCRequestResult?
 }
 
-actor UVCStandardControls {
-    private let transport: DirectUVCTransport
+protocol StandardControlInspecting: Sendable {
+    func inspect(
+        connection: UVCTransportConnection,
+        cmioObservations: [UVCControlID: CMIOControlObservation]
+    ) async -> [UVCStandardControlState]
+    func setScalar(
+        control: UVCControlID,
+        value: Int64,
+        connection: UVCTransportConnection,
+        writeAuthorization: any UVCWriteAuthorizing
+    ) async -> UVCWriteOutcome
+    func setPanTilt(
+        pan: Int32?,
+        tilt: Int32?,
+        connection: UVCTransportConnection,
+        writeAuthorization: any UVCWriteAuthorizing
+    ) async -> UVCWriteOutcome
+}
 
-    init(transport: DirectUVCTransport) {
+actor UVCStandardControls: StandardControlInspecting {
+    private let transport: any UVCTransporting
+
+    init(transport: any UVCTransporting) {
         self.transport = transport
     }
 
@@ -52,7 +71,8 @@ actor UVCStandardControls {
     func setScalar(
         control: UVCControlID,
         value: Int64,
-        connection: UVCTransportConnection
+        connection: UVCTransportConnection,
+        writeAuthorization: any UVCWriteAuthorizing
     ) async -> UVCWriteOutcome {
         let oldValue = await read(control: control, request: .getCurrent, connection: connection)
         guard let payload = UVCValueCodec.encodeScalar(value, for: control) else {
@@ -79,7 +99,8 @@ actor UVCStandardControls {
             selector: control.selector,
             entityID: 1,
             expectedLength: control.expectedPayloadLength,
-            payload: payload
+            payload: payload,
+            writeAuthorization: writeAuthorization
         )
         let resultingValue = await read(control: control, request: .getCurrent, connection: connection)
 
@@ -95,7 +116,8 @@ actor UVCStandardControls {
     func setPanTilt(
         pan: Int32?,
         tilt: Int32?,
-        connection: UVCTransportConnection
+        connection: UVCTransportConnection,
+        writeAuthorization: any UVCWriteAuthorizing
     ) async -> UVCWriteOutcome {
         let oldValue = await read(control: .panTilt, request: .getCurrent, connection: connection)
         guard let current = UVCValueCodec.decodePanTilt(oldValue.bytes) else {
@@ -118,7 +140,8 @@ actor UVCStandardControls {
             selector: UVCControlID.panTilt.selector,
             entityID: 1,
             expectedLength: UVCControlID.panTilt.expectedPayloadLength,
-            payload: UVCValueCodec.encodePanTilt(requested)
+            payload: UVCValueCodec.encodePanTilt(requested),
+            writeAuthorization: writeAuthorization
         )
         let resultingValue = await read(control: .panTilt, request: .getCurrent, connection: connection)
 

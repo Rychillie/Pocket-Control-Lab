@@ -26,15 +26,89 @@ struct UVCTransportConnection: Equatable, Sendable {
     let generation: UInt64
 }
 
-actor DirectUVCTransport {
+/// A session-owned lease that serializes an explicit lock with the bridge call
+/// that could send SET_CUR. The authorized closure must remain synchronous:
+/// holding the lease across an `await` would make the lock ordering ambiguous.
+protocol UVCWriteAuthorizing: Sendable {
+    func performIfPermitted(
+        for connection: UVCTransportConnection,
+        operation: @Sendable () -> UVCRequestResult
+    ) -> UVCRequestResult?
+}
+
+/// The narrow async surface used by session orchestration and the two UVC
+/// inspectors. Keeping this protocol small lets the M0 test target exercise
+/// lifecycle behaviour without opening IOKit user clients or the C bridge.
+protocol UVCTransporting: Sendable {
+    func activate(_ connection: UVCTransportConnection) async
+    func invalidate() async
+    func invalidate(upTo generation: UInt64) async
+    func setWritesEnabled(_ enabled: Bool, for connection: UVCTransportConnection) async
+    func disableWrites() async
+    func perform(
+        connection: UVCTransportConnection,
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        expectedLength: Int,
+        payload: [UInt8]?,
+        writeAuthorization: (any UVCWriteAuthorizing)?
+    ) async -> UVCRequestResult
+}
+
+extension UVCTransporting {
+    func perform(
+        connection: UVCTransportConnection,
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        expectedLength: Int
+    ) async -> UVCRequestResult {
+        await perform(
+            connection: connection,
+            request: request,
+            selector: selector,
+            entityID: entityID,
+            expectedLength: expectedLength,
+            payload: nil,
+            writeAuthorization: nil
+        )
+    }
+
+    func perform(
+        connection: UVCTransportConnection,
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        expectedLength: Int,
+        payload: [UInt8]?
+    ) async -> UVCRequestResult {
+        await perform(
+            connection: connection,
+            request: request,
+            selector: selector,
+            entityID: entityID,
+            expectedLength: expectedLength,
+            payload: payload,
+            writeAuthorization: nil
+        )
+    }
+}
+
+actor DirectUVCTransport: UVCTransporting {
     private var session: DirectUVCSessionHandle?
     private var sessionConnection: UVCTransportConnection?
     private var activeConnection: UVCTransportConnection?
     private var blockedConnection: UVCTransportConnection?
     private var blockedReason: String?
     private var writesEnabled = false
+    private var retiredThroughGeneration: UInt64 = 0
 
     func activate(_ connection: UVCTransportConnection) {
+        guard connection.generation >= retiredThroughGeneration else {
+            return
+        }
+
         session = nil
         sessionConnection = nil
         activeConnection = connection
@@ -50,6 +124,21 @@ actor DirectUVCTransport {
         blockedConnection = nil
         blockedReason = nil
         writesEnabled = false
+    }
+
+    /// Retires every older session lease before clearing transport state. A
+    /// canceled task that awakens later cannot reactivate its old connection.
+    func invalidate(upTo generation: UInt64) {
+        retiredThroughGeneration = max(retiredThroughGeneration, generation)
+
+        // A delayed teardown from an older session may arrive after a newer
+        // connection has been activated. It can retire its own lease but must
+        // not clear the newer session or its write latch.
+        guard activeConnection?.generation ?? 0 <= generation else {
+            return
+        }
+
+        invalidate()
     }
 
     /// This is deliberately separate from whether a raw user client is
@@ -72,8 +161,9 @@ actor DirectUVCTransport {
         selector: UInt8,
         entityID: UInt8,
         expectedLength: Int,
-        payload: [UInt8]? = nil
-    ) -> UVCRequestResult {
+        payload: [UInt8]? = nil,
+        writeAuthorization: (any UVCWriteAuthorizing)? = nil
+    ) async -> UVCRequestResult {
         guard activeConnection == connection else {
             return UVCRequestResult(
                 request: request,
@@ -94,12 +184,22 @@ actor DirectUVCTransport {
             )
         }
 
-        if request == .setCurrent, !writesEnabled {
-            return UVCRequestResult(
-                request: request,
-                bytes: [],
-                outcome: .blocked("UVC writes are disabled. SET_CUR is blocked by the transport safety latch.")
-            )
+        if request == .setCurrent {
+            guard writesEnabled else {
+                return UVCRequestResult(
+                    request: request,
+                    bytes: [],
+                    outcome: .blocked("UVC writes are disabled. SET_CUR is blocked by the transport safety latch.")
+                )
+            }
+
+            guard writeAuthorization != nil else {
+                return UVCRequestResult(
+                    request: request,
+                    bytes: [],
+                    outcome: .blocked("UVC writes are no longer authorized for this session. SET_CUR was not sent.")
+                )
+            }
         }
 
         if blockedConnection == connection, let blockedReason {
@@ -114,7 +214,7 @@ actor DirectUVCTransport {
             )
         }
 
-        var bytes = payload ?? [UInt8](repeating: 0, count: expectedLength)
+        let bytes = payload ?? [UInt8](repeating: 0, count: expectedLength)
         guard bytes.count == expectedLength else {
             return UVCRequestResult(
                 request: request,
@@ -127,11 +227,61 @@ actor DirectUVCTransport {
             )
         }
 
+        guard let session else {
+            return UVCRequestResult(
+                request: request,
+                bytes: [],
+                outcome: .blocked("Direct UVC transport is unavailable.")
+            )
+        }
+
+        let bridgeOperation = { @Sendable [session, bytes] in
+            Self.performBridgeRequest(
+                session: session,
+                request: request,
+                selector: selector,
+                entityID: entityID,
+                expectedLength: expectedLength,
+                bytes: bytes
+            )
+        }
+
+        guard request == .setCurrent else {
+            return bridgeOperation()
+        }
+
+        guard let result = writeAuthorization?.performIfPermitted(
+            for: connection,
+            operation: bridgeOperation
+        ) else {
+            return UVCRequestResult(
+                request: request,
+                bytes: [],
+                outcome: .blocked("UVC writes are no longer authorized for this session. SET_CUR was not sent.")
+            )
+        }
+
+        return result
+    }
+
+    /// Called only by the direct transport after it has validated the request
+    /// and obtained a live bridge session. SET_CUR invokes this inside the
+    /// session write lease so an explicit lock and the bridge call are
+    /// linearly ordered.
+    private nonisolated static func performBridgeRequest(
+        session: DirectUVCSessionHandle,
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        expectedLength: Int,
+        bytes: [UInt8]
+    ) -> UVCRequestResult {
+        var mutableBytes = bytes
         var transferred: UInt32 = 0
         var rawStage: UInt32 = 0
-        let status: Int32 = bytes.withUnsafeMutableBufferPointer { buffer in
+        let status: Int32 = mutableBytes.withUnsafeMutableBufferPointer { buffer in
             PocketUVCSessionPerform(
-                session?.pointer,
+                session.pointer,
                 request.rawValue,
                 selector,
                 entityID,
@@ -155,7 +305,7 @@ actor DirectUVCTransport {
         guard transferred == UInt32(expectedLength) else {
             return UVCRequestResult(
                 request: request,
-                bytes: Array(bytes.prefix(Int(transferred))),
+                bytes: Array(mutableBytes.prefix(Int(transferred))),
                 outcome: .failed(
                     status: status,
                     stage: stage,
@@ -164,7 +314,7 @@ actor DirectUVCTransport {
             )
         }
 
-        return UVCRequestResult(request: request, bytes: bytes, outcome: .success)
+        return UVCRequestResult(request: request, bytes: mutableBytes, outcome: .success)
     }
 
     private func ensureSession(for connection: UVCTransportConnection) -> Bool {
@@ -189,7 +339,7 @@ actor DirectUVCTransport {
         )
         guard let newSession else {
             let stage = DirectUVCStage(rawStage: rawStage)
-            let reason = "\(stage.displayName) failed: \(statusMessage(for: status)) (0x\(String(format: "%08X", UInt32(bitPattern: status))))."
+            let reason = "\(stage.displayName) failed: \(Self.statusMessage(for: status)) (0x\(String(format: "%08X", UInt32(bitPattern: status))))."
 
             if stage == .pluginCreation || stage == .interfaceQuery {
                 blockedConnection = connection
@@ -206,7 +356,7 @@ actor DirectUVCTransport {
         return true
     }
 
-    private func statusMessage(for status: Int32) -> String {
+    private nonisolated static func statusMessage(for status: Int32) -> String {
         switch UInt32(bitPattern: status) {
         case 0xE00002BE:
             "kIOReturnNoResources"

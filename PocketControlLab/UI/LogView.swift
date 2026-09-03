@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LogView: View {
-    @Bindable var lab: PocketLabModel
+    @Bindable var session: DeviceSession
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -12,22 +12,22 @@ struct LogView: View {
                 Spacer()
 
                 Button("Copy Log") {
-                    lab.copyLog()
+                    session.copyLog()
                 }
 
                 Button("Save Investigation…") {
-                    lab.saveInvestigation()
+                    session.saveInvestigation()
                 }
             }
 
-            Toggle("Include raw Extension Unit data and sensitive diagnostic details in copied/saved logs", isOn: $lab.includeRawExtensionUnitDataInExports)
+            Toggle("Include raw Extension Unit data and sensitive diagnostic details in copied/saved logs", isOn: $session.includeRawExtensionUnitDataInExports)
                 .toggleStyle(.checkbox)
                 .font(.caption)
                 .accessibilityHint("Off by default. Raw Extension Unit payloads and diagnostic details can reveal camera state or local identifiers when shared.")
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(lab.logger.entries) { entry in
+                    ForEach(session.logger.entries) { entry in
                         Text(entry.text)
                             .font(.caption.monospaced())
                             .frame(maxWidth: .infinity, alignment: .leading)
