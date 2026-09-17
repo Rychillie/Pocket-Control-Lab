@@ -18,6 +18,59 @@ private enum ExpectedUVCPolicyContract {
 }
 
 struct PocketControlLabTests {
+    @Test("Menu-bar presentation stays generic through passive connection changes")
+    @MainActor
+    func menuBarPresentationFollowsPassiveConnectionChanges() async {
+        let fixture = makeFixture()
+
+        let noDevice = MenuBarPresentation(identification: nil)
+        #expect(noDevice.connectionText == "No Pocket connected")
+        #expect(noDevice.statusText == "Passive detection only")
+        #expect(noDevice.systemImage == "camera")
+        #expect(noDevice.accessibilityLabel == "Pocket Control Lab: No Pocket connected. Passive detection only. Diagnostics actions are explicit.")
+
+        let verifiedProfile = MenuBarPresentation(identification: .confirmedPocket4VIDPID)
+        let familyProfile = MenuBarPresentation(identification: .djiOsmoPocketFamily)
+        #expect(verifiedProfile == familyProfile)
+        #expect(verifiedProfile.connectionText == "Pocket detected")
+
+        fixture.session.startPassiveDiscovery()
+        let firstConnection = verifiedPocket(registryID: 701)
+        fixture.monitorFactory.latestMonitor?.emit(firstConnection)
+        #expect(await waitForDevice(fixture.session, registryID: firstConnection.registryID))
+
+        let connected = MenuBarPresentation(identification: fixture.session.device?.identification)
+        #expect(connected.connectionText == "Pocket detected")
+        #expect(connected.statusText == "Passive detection only")
+        #expect(connected.systemImage == "camera.fill")
+        #expect(connected.accessibilityLabel == "Pocket Control Lab: Pocket detected. Passive detection only. Diagnostics actions are explicit.")
+        #expect(!connected.accessibilityLabel.contains("701"))
+        #expect(!connected.accessibilityLabel.contains("0x"))
+
+        fixture.monitorFactory.latestMonitor?.emit(nil)
+        #expect(await waitForNoDevice(fixture.session))
+        #expect(MenuBarPresentation(identification: fixture.session.device?.identification) == noDevice)
+
+        let reconnected = unverifiedPocket(registryID: 702)
+        fixture.monitorFactory.latestMonitor?.emit(reconnected)
+        #expect(await waitForDevice(fixture.session, registryID: reconnected.registryID))
+        #expect(MenuBarPresentation(identification: fixture.session.device?.identification) == connected)
+
+        #expect(fixture.monitorFactory.monitorCount == 1)
+        #expect(fixture.monitorFactory.latestMonitor?.startCount == 1)
+        #expect(fixture.camera.permissionRequestCount == 0)
+        #expect(fixture.camera.previewSourceRequestCount == 0)
+        #expect(fixture.preview.startCount == 0)
+        let requests = await fixture.transport.requestSnapshot()
+        let standardInspectionCount = await fixture.standardInspector?.inspectionCount()
+        let extensionInspectionCount = await fixture.extensionInspector?.inspectionCount()
+        #expect(requests.isEmpty)
+        #expect(standardInspectionCount == 0)
+        #expect(extensionInspectionCount == 0)
+
+        fixture.session.stopPassiveDiscovery()
+    }
+
     @Test("Passive discovery is idempotent and never enters the control plane")
     @MainActor
     func passiveDiscoveryIsIdempotentAndPassive() async {
@@ -1975,6 +2028,17 @@ private func drainTasks(_ count: Int = 64) async {
 private func waitForDevice(_ session: DeviceSession, registryID: UInt64) async -> Bool {
     for _ in 0..<256 {
         if session.device?.registryID == registryID {
+            return true
+        }
+        await Task.yield()
+    }
+    return false
+}
+
+@MainActor
+private func waitForNoDevice(_ session: DeviceSession) async -> Bool {
+    for _ in 0..<256 {
+        if session.device == nil {
             return true
         }
         await Task.yield()
