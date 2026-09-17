@@ -2,10 +2,45 @@ import Foundation
 import IOKit
 import IOKit.usb
 
-enum PocketUSBDeviceScanner {
+enum PocketUSBProfile {
     private static let expectedVendorID: UInt16 = 0x2CA3
     private static let expectedProductID: UInt16 = 0x0023
 
+    static func classify(
+        vendorID: UInt16?,
+        productID: UInt16?,
+        manufacturer: String?,
+        productIdentifier: String?
+    ) -> PocketIdentification? {
+        let normalizedProduct = normalize(productIdentifier)
+        let isDJI = vendorID == expectedVendorID
+            || manufacturer?.localizedCaseInsensitiveContains("DJI") == true
+        let isPocketFamily = isDJI && normalizedProduct.contains("osmopocket")
+        // VID/PID is necessary but not sufficient: a live Pocket 4 profile
+        // also requires the published DJI Osmo Pocket 4 product identity.
+        // Failing closed here prevents a different device that reuses the pair
+        // from reaching the UVC control bridge.
+        let isConfirmedPocket4 = vendorID == expectedVendorID
+            && productID == expectedProductID
+            && isDJI
+            && normalizedProduct.contains("osmopocket4")
+
+        if isConfirmedPocket4 {
+            return .confirmedPocket4VIDPID
+        }
+
+        return isPocketFamily ? .djiOsmoPocketFamily : nil
+    }
+
+    private static func normalize(_ value: String?) -> String {
+        guard let value else {
+            return ""
+        }
+        return value.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(String.init).joined()
+    }
+}
+
+enum PocketUSBDeviceScanner {
     static func currentPocketDevice() -> PocketDevice? {
         guard let matchingDictionary = IOServiceMatching("IOUSBHostDevice") else {
             return nil
@@ -55,20 +90,12 @@ enum PocketUSBDeviceScanner {
         let manufacturer = string(service, key: "USB Vendor Name") ?? string(service, key: "kUSBVendorString")
         let product = string(service, key: "USB Product Name") ?? string(service, key: "kUSBProductString")
 
-        let normalizedProduct = normalize(product)
-        let isDJI = vendorID == expectedVendorID
-            || manufacturer?.localizedCaseInsensitiveContains("DJI") == true
-        let isPocketFamily = isDJI && normalizedProduct.contains("osmopocket")
-        // VID/PID is necessary but not sufficient: a live Pocket 4 profile
-        // also requires the published DJI Osmo Pocket 4 product identity.
-        // Failing closed here prevents a different device that reuses the pair
-        // from reaching the UVC control bridge.
-        let isConfirmedPocket4 = vendorID == expectedVendorID
-            && productID == expectedProductID
-            && isDJI
-            && normalizedProduct.contains("osmopocket4")
-
-        guard isConfirmedPocket4 || isPocketFamily else {
+        guard let identification = PocketUSBProfile.classify(
+            vendorID: vendorID,
+            productID: productID,
+            manufacturer: manufacturer,
+            productIdentifier: product
+        ) else {
             return nil
         }
 
@@ -90,7 +117,7 @@ enum PocketUSBDeviceScanner {
             ),
             activeConfiguration: number(service, key: "kUSBCurrentConfiguration"),
             enumerationState: number(service, key: "UsbEnumerationState"),
-            identification: isConfirmedPocket4 ? .confirmedPocket4VIDPID : .djiOsmoPocketFamily
+            identification: identification
         )
     }
 
@@ -106,13 +133,6 @@ enum PocketUSBDeviceScanner {
         }
 
         return candidate.registryID < current.registryID ? candidate : current
-    }
-
-    private static func normalize(_ value: String?) -> String {
-        guard let value else {
-            return ""
-        }
-        return value.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(String.init).joined()
     }
 
     private static func string(_ service: io_service_t, key: String) -> String? {

@@ -1,11 +1,188 @@
 import Foundation
 import IOKit
 
+/// An in-memory capability token for one observed USB enumeration. The bridge
+/// also receives the registry ID, so a delayed request cannot bind to a new
+/// device that reappears at the same physical USB location.
+struct UVCTransportConnection: Equatable, Sendable {
+    let locationID: UInt32
+    let registryID: UInt64
+    let generation: UInt64
+}
+
+/// The Swift-side allowlist mirrors the C bridge so invalid requests never
+/// cause the transport to create a legacy IOKit user client. The bridge keeps
+/// its independent validation as defense in depth.
+enum UVCRequestPolicy {
+    static let videoControlInterfaceNumber: UInt8 = 0
+    static let cameraTerminalEntityID: UInt8 = 1
+    static let extensionUnitEntityID: UInt8 = 6
+    static let maximumExtensionUnitReadLength = 1024
+
+    enum Violation: Equatable, Sendable {
+        case connectionChanged
+        case requestNotAllowed
+        case payloadLengthMismatch
+
+        var message: String {
+            switch self {
+            case .connectionChanged:
+                "The USB connection changed before this request could be sent."
+            case .requestNotAllowed:
+                "This request is outside the lab's validated UVC control policy."
+            case .payloadLengthMismatch:
+                "Payload size does not match the validated UVC control layout."
+            }
+        }
+    }
+
+    /// Returns whether a request has an exact, policy-approved UVC layout.
+    /// This intentionally includes length, because a valid selector with a
+    /// malformed buffer must be treated as a different, prohibited request.
+    static func allows(
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        expectedLength: Int
+    ) -> Bool {
+        guard (1...maximumExtensionUnitReadLength).contains(expectedLength) else {
+            return false
+        }
+
+        switch entityID {
+        case cameraTerminalEntityID:
+            return allowsCameraTerminalRequest(
+                request: request,
+                selector: selector,
+                expectedLength: expectedLength
+            )
+        case extensionUnitEntityID:
+            return allowsExtensionUnitRequest(
+                request: request,
+                selector: selector,
+                expectedLength: expectedLength
+            )
+        default:
+            return false
+        }
+    }
+
+    /// Performs every validation that can be decided without opening a bridge
+    /// session. Tests can exercise this pure policy without C/IOKit access.
+    static func validate(
+        connection: UVCTransportConnection,
+        activeConnection: UVCTransportConnection?,
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        expectedLength: Int,
+        payload: [UInt8]?
+    ) -> Violation? {
+        guard activeConnection == connection else {
+            return .connectionChanged
+        }
+
+        guard allows(
+            request: request,
+            selector: selector,
+            entityID: entityID,
+            expectedLength: expectedLength
+        ) else {
+            return .requestNotAllowed
+        }
+
+        if request == .setCurrent, payload == nil {
+            return .payloadLengthMismatch
+        }
+
+        guard payload?.count == expectedLength || payload == nil else {
+            return .payloadLengthMismatch
+        }
+
+        return nil
+    }
+
+    private static func allowsCameraTerminalRequest(
+        request: UVCRequest,
+        selector: UInt8,
+        expectedLength: Int
+    ) -> Bool {
+        let controlLength: Int
+        switch selector {
+        case 0x0B, 0x0F: // Zoom Absolute, Roll Absolute
+            controlLength = 2
+        case 0x0D: // Pan/Tilt Absolute
+            controlLength = 8
+        default:
+            return false
+        }
+
+        switch request {
+        case .getInfo:
+            return expectedLength == 1
+        case .getCurrent, .getMinimum, .getMaximum, .getResolution, .getDefault, .setCurrent:
+            return expectedLength == controlLength
+        case .getLength:
+            return false
+        }
+    }
+
+    private static func allowsExtensionUnitRequest(
+        request: UVCRequest,
+        selector: UInt8,
+        expectedLength: Int
+    ) -> Bool {
+        guard (1...3).contains(Int(selector)) else {
+            return false
+        }
+
+        switch request {
+        case .getInfo:
+            return expectedLength == 1
+        case .getLength:
+            return expectedLength == 2
+        case .getCurrent:
+            return (1...maximumExtensionUnitReadLength).contains(expectedLength)
+        case .setCurrent, .getMinimum, .getMaximum, .getResolution, .getDefault:
+            return false
+        }
+    }
+}
+
+/// An internal seam around the C bridge. It is deliberately synchronous:
+/// `UVCWriteAuthorizing` must serialize the authorization lease and the
+/// eventual bridge call without an `await` in between.
+protocol DirectUVCBridgeSession: Sendable {
+    func perform(
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        interfaceNumber: UInt8,
+        bytes: inout [UInt8]
+    ) -> DirectUVCBridgeResponse
+}
+
+struct DirectUVCBridgeResponse: Sendable {
+    let status: Int32
+    let stage: DirectUVCStage
+    let bytesTransferred: Int
+}
+
+struct DirectUVCBridgeOpenResult: Sendable {
+    let session: (any DirectUVCBridgeSession)?
+    let status: Int32
+    let stage: DirectUVCStage
+}
+
+protocol DirectUVCBridging: Sendable {
+    func open(locationID: UInt32, registryID: UInt64) -> DirectUVCBridgeOpenResult
+}
+
 /// Holds the opaque legacy IOKit pointer for the lifetime of one transport
 /// session. The C bridge itself is the only code that can use this pointer.
 /// The unchecked conformance is intentionally limited to this private wrapper:
 /// actor isolation still serializes all requests made by `DirectUVCTransport`.
-private final class DirectUVCSessionHandle: @unchecked Sendable {
+private final class DirectUVCSessionHandle: DirectUVCBridgeSession, @unchecked Sendable {
     let pointer: OpaquePointer
 
     init(pointer: OpaquePointer) {
@@ -15,15 +192,59 @@ private final class DirectUVCSessionHandle: @unchecked Sendable {
     deinit {
         PocketUVCSessionDestroy(pointer)
     }
+
+    func perform(
+        request: UVCRequest,
+        selector: UInt8,
+        entityID: UInt8,
+        interfaceNumber: UInt8,
+        bytes: inout [UInt8]
+    ) -> DirectUVCBridgeResponse {
+        let length = bytes.count
+        var transferred: UInt32 = 0
+        var rawStage: UInt32 = 0
+        let status: Int32 = bytes.withUnsafeMutableBufferPointer { buffer in
+            PocketUVCSessionPerform(
+                pointer,
+                request.rawValue,
+                selector,
+                entityID,
+                interfaceNumber,
+                buffer.baseAddress,
+                UInt16(length),
+                &transferred,
+                &rawStage
+            )
+        }
+
+        return DirectUVCBridgeResponse(
+            status: status,
+            stage: DirectUVCStage(rawStage: rawStage),
+            bytesTransferred: Int(transferred)
+        )
+    }
 }
 
-/// An in-memory capability token for one observed USB enumeration. The bridge
-/// also receives the registry ID, so a delayed request cannot bind to a new
-/// device that reappears at the same physical USB location.
-struct UVCTransportConnection: Equatable, Sendable {
-    let locationID: UInt32
-    let registryID: UInt64
-    let generation: UInt64
+private struct DirectUVCBridge: DirectUVCBridging {
+    func open(locationID: UInt32, registryID: UInt64) -> DirectUVCBridgeOpenResult {
+        var status: Int32 = 0
+        var rawStage: UInt32 = 0
+        let pointer = PocketUVCSessionCreate(locationID, registryID, &status, &rawStage)
+
+        guard let pointer else {
+            return DirectUVCBridgeOpenResult(
+                session: nil,
+                status: status,
+                stage: DirectUVCStage(rawStage: rawStage)
+            )
+        }
+
+        return DirectUVCBridgeOpenResult(
+            session: DirectUVCSessionHandle(pointer: pointer),
+            status: status,
+            stage: DirectUVCStage(rawStage: rawStage)
+        )
+    }
 }
 
 /// A session-owned lease that serializes an explicit lock with the bridge call
@@ -96,13 +317,18 @@ extension UVCTransporting {
 }
 
 actor DirectUVCTransport: UVCTransporting {
-    private var session: DirectUVCSessionHandle?
+    private let bridge: any DirectUVCBridging
+    private var session: (any DirectUVCBridgeSession)?
     private var sessionConnection: UVCTransportConnection?
     private var activeConnection: UVCTransportConnection?
     private var blockedConnection: UVCTransportConnection?
     private var blockedReason: String?
     private var writesEnabled = false
     private var retiredThroughGeneration: UInt64 = 0
+
+    init(bridge: any DirectUVCBridging = DirectUVCBridge()) {
+        self.bridge = bridge
+    }
 
     func activate(_ connection: UVCTransportConnection) {
         guard connection.generation >= retiredThroughGeneration else {
@@ -164,24 +390,33 @@ actor DirectUVCTransport: UVCTransporting {
         payload: [UInt8]? = nil,
         writeAuthorization: (any UVCWriteAuthorizing)? = nil
     ) async -> UVCRequestResult {
-        guard activeConnection == connection else {
-            return UVCRequestResult(
-                request: request,
-                bytes: [],
-                outcome: .blocked("The USB connection changed before this request could be sent.")
-            )
-        }
-
-        guard expectedLength > 0, expectedLength <= 1024 else {
-            return UVCRequestResult(
-                request: request,
-                bytes: [],
-                outcome: .failed(
-                    status: Int32(kIOReturnBadArgument),
-                    stage: .requestValidation,
-                    message: "The requested buffer length is outside this lab's safe bound."
+        if let violation = UVCRequestPolicy.validate(
+            connection: connection,
+            activeConnection: activeConnection,
+            request: request,
+            selector: selector,
+            entityID: entityID,
+            expectedLength: expectedLength,
+            payload: payload
+        ) {
+            switch violation {
+            case .connectionChanged:
+                return UVCRequestResult(
+                    request: request,
+                    bytes: [],
+                    outcome: .blocked(violation.message)
                 )
-            )
+            case .requestNotAllowed, .payloadLengthMismatch:
+                return UVCRequestResult(
+                    request: request,
+                    bytes: [],
+                    outcome: .failed(
+                        status: Int32(kIOReturnBadArgument),
+                        stage: .requestValidation,
+                        message: violation.message
+                    )
+                )
+            }
         }
 
         if request == .setCurrent {
@@ -215,17 +450,6 @@ actor DirectUVCTransport: UVCTransporting {
         }
 
         let bytes = payload ?? [UInt8](repeating: 0, count: expectedLength)
-        guard bytes.count == expectedLength else {
-            return UVCRequestResult(
-                request: request,
-                bytes: [],
-                outcome: .failed(
-                    status: Int32(kIOReturnBadArgument),
-                    stage: .requestValidation,
-                    message: "Payload size does not match the validated UVC control layout."
-                )
-            )
-        }
 
         guard let session else {
             return UVCRequestResult(
@@ -269,7 +493,7 @@ actor DirectUVCTransport: UVCTransporting {
     /// session write lease so an explicit lock and the bridge call are
     /// linearly ordered.
     private nonisolated static func performBridgeRequest(
-        session: DirectUVCSessionHandle,
+        session: any DirectUVCBridgeSession,
         request: UVCRequest,
         selector: UInt8,
         entityID: UInt8,
@@ -277,39 +501,35 @@ actor DirectUVCTransport: UVCTransporting {
         bytes: [UInt8]
     ) -> UVCRequestResult {
         var mutableBytes = bytes
-        var transferred: UInt32 = 0
-        var rawStage: UInt32 = 0
-        let status: Int32 = mutableBytes.withUnsafeMutableBufferPointer { buffer in
-            PocketUVCSessionPerform(
-                session.pointer,
-                request.rawValue,
-                selector,
-                entityID,
-                0,
-                buffer.baseAddress,
-                UInt16(expectedLength),
-                &transferred,
-                &rawStage
-            )
-        }
+        let response = session.perform(
+            request: request,
+            selector: selector,
+            entityID: entityID,
+            interfaceNumber: UVCRequestPolicy.videoControlInterfaceNumber,
+            bytes: &mutableBytes
+        )
 
-        let stage = DirectUVCStage(rawStage: rawStage)
-        guard status == Int32(kIOReturnSuccess) else {
+        guard response.status == Int32(kIOReturnSuccess) else {
             return UVCRequestResult(
                 request: request,
                 bytes: [],
-                outcome: .failed(status: status, stage: stage, message: statusMessage(for: status))
+                outcome: .failed(
+                    status: response.status,
+                    stage: response.stage,
+                    message: statusMessage(for: response.status)
+                )
             )
         }
 
-        guard transferred == UInt32(expectedLength) else {
+        guard response.bytesTransferred == expectedLength else {
+            let receivedLength = min(max(response.bytesTransferred, 0), mutableBytes.count)
             return UVCRequestResult(
                 request: request,
-                bytes: Array(mutableBytes.prefix(Int(transferred))),
+                bytes: Array(mutableBytes.prefix(receivedLength)),
                 outcome: .failed(
-                    status: status,
-                    stage: stage,
-                    message: "Short transfer: expected \(expectedLength) byte(s), received \(transferred)."
+                    status: response.status,
+                    stage: response.stage,
+                    message: "Short transfer: expected \(expectedLength) byte(s), received \(response.bytesTransferred)."
                 )
             )
         }
@@ -329,19 +549,14 @@ actor DirectUVCTransport: UVCTransporting {
         session = nil
         sessionConnection = nil
 
-        var status: Int32 = 0
-        var rawStage: UInt32 = 0
-        let newSession = PocketUVCSessionCreate(
-            connection.locationID,
-            connection.registryID,
-            &status,
-            &rawStage
+        let openResult = bridge.open(
+            locationID: connection.locationID,
+            registryID: connection.registryID
         )
-        guard let newSession else {
-            let stage = DirectUVCStage(rawStage: rawStage)
-            let reason = "\(stage.displayName) failed: \(Self.statusMessage(for: status)) (0x\(String(format: "%08X", UInt32(bitPattern: status))))."
+        guard let newSession = openResult.session else {
+            let reason = "\(openResult.stage.displayName) failed: \(Self.statusMessage(for: openResult.status)) (0x\(String(format: "%08X", UInt32(bitPattern: openResult.status))))."
 
-            if stage == .pluginCreation || stage == .interfaceQuery {
+            if openResult.stage == .pluginCreation || openResult.stage == .interfaceQuery {
                 blockedConnection = connection
                 blockedReason = "\(reason) The app will not open, seize, or otherwise take over the UVC interface."
             } else {
@@ -351,7 +566,7 @@ actor DirectUVCTransport: UVCTransporting {
             return false
         }
 
-        session = DirectUVCSessionHandle(pointer: newSession)
+        session = newSession
         sessionConnection = connection
         return true
     }

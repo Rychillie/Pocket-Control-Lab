@@ -9,10 +9,14 @@ Open `PocketControlLab.xcodeproj` in Xcode and build the
 compile-only check. Never use a personal investigation log, descriptor dump,
 or screenshot as a test fixture without redacting it first.
 
-The repository currently has no configured test target. When adding one,
-prioritize tests for the USB-family classifier, connection lifecycle,
-write-latch behavior, UVC request whitelist, Extension Unit read-only boundary,
-and log-redaction defaults.
+Run the hardware-free test suite with:
+
+```sh
+xcodebuild test -project PocketControlLab.xcodeproj -scheme PocketControlLab \
+  -configuration Debug -destination "platform=macOS,arch=$(uname -m)" \
+  -derivedDataPath .build/PocketControlLabDerivedData \
+  CODE_SIGNING_ALLOWED=NO -quiet
+```
 
 ## Hardware safety rules
 
