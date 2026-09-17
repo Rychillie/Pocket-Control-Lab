@@ -119,6 +119,21 @@ not constitute Developer ID signing, notarization, Gatekeeper acceptance, a
 clean-machine test, or public release readiness. See
 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
 
+### 2026-09-17 — Menu-bar-first laboratory shell
+
+**Code/build verified.** The app now starts with a privacy-safe menu-bar item
+and passive USB discovery only. Diagnostics open on explicit request in one
+reusable engineering window; closing that window leaves passive discovery
+running. The compact menu deliberately shows only generic connection presence
+and never identifiers, product text, camera metadata, logs, or raw UVC data.
+
+**Decision.** M0 retains ordinary Dock and app-switcher presence. `LSUIElement`
+is intentionally unset while Diagnostics remains an engineering surface, so
+this is menu-bar-first rather than a completed menu-bar-only distribution. A
+future agent-mode change requires separate built-app accessibility, activation,
+open/close, and quit validation. Launch still does not request camera access,
+start preview, inspect UVC controls, or send writes.
+
 ## Enduring engineering decisions
 
 ### Profile identity is stronger than a USB port

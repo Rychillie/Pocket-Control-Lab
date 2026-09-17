@@ -50,6 +50,7 @@ struct ContentView: View {
                 Button("Refresh Read-Only Inspection", systemImage: "arrow.clockwise") {
                     session.refreshReadOnlyInspection()
                 }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(session.device?.supportsPocket4ControlProfile != true)
                 .accessibilityLabel("Refresh safe device and UVC inspection")
                 .accessibilityHint("Available only for the verified Pocket 4 USB control profile.")
