@@ -19,7 +19,7 @@ visual humana.
 | --- | --- | --- |
 | App / ciclo de vida | `PocketControlLab/App` | retém o único `DeviceSession` e encaminha launch, sleep, wake e terminação |
 | Sessão | `PocketControlLab/App` | coordena descoberta, permissão, preview, inspeção, logs, snapshots e trava de escrita |
-| Modelos | `PocketControlLab/Models` | dispositivo, formatos, ranges UVC, snapshots e diffs |
+| Modelos | `PocketControlLab/Models` | dispositivo, formatos, ranges UVC, snapshots, diffs e apresentação tipada da conexão |
 | Preview | `PocketControlLab/Camera` | `AVCaptureDevice`, `AVCaptureSession` e `AVCaptureVideoPreviewLayer` em SwiftUI |
 | USB | `PocketControlLab/USB` | leitura do IORegistry, ponte UVC estritamente validada, controles padrão e XU |
 | Investigação | `PocketControlLab/Investigation` | log local e snapshots/diff |
@@ -70,6 +70,28 @@ Se houver mais de uma câmera DJI externa, o fallback de nome genérico não
 escolhe uma delas de forma ambígua. Isso evita associar controles da Pocket 4
 a outra câmera conectada.
 
+## Status de conexão e menu bar
+
+`PocketConnectionPresentationState` é a única projeção de status usada pela
+menu bar e pelo cabeçalho de Diagnostics. Ela deriva texto, símbolo SF,
+severidade visual, próxima ação segura e rótulo conciso para VoiceOver a partir
+da fase de descoberta passiva, perfil USB, histórico de desconexão da execução,
+autorização de câmera sem prompt, visibilidade AVFoundation somente-leitura e
+resultado já armazenado da inspeção direta UVC.
+
+As views não consultam IORegistry, AVFoundation, logs, preview ou a ponte UVC
+para adivinhar a conexão. Renderizar o estado não pede TCC, não inicia preview,
+não abre transporte e não faz requests UVC. O indicador visual de severidade é
+suplementar: o símbolo, o título e o rótulo de acessibilidade comunicam o
+estado sem depender de cor.
+
+As únicas ações da menu bar são **Refresh Detection**, que solicita um novo
+snapshot ao monitor passivo já existente, e **Open Diagnostics**, que abre a
+janela de laboratório. Nenhuma delas inicia inspeção UVC ou preview. A
+disponibilidade UVC direta permanece `unknown` até uma inspeção somente-leitura
+iniciada explicitamente pelo operador; o resultado armazenado é associado à
+geração da conexão atual e é descartado em desconexão ou reenumeração.
+
 ## APIs usadas
 
 - Swift e SwiftUI para a janela e a interface.
@@ -88,7 +110,9 @@ a outra câmera conectada.
 3. Conecte a Pocket 4 por USB-C e selecione **Webcam Mode** na câmera.
 4. Execute o app. Ele inicia somente a descoberta passiva, sem solicitar
    permissão, iniciar preview ou fazer requests UVC.
-5. Confirme `Pocket 4 Connected` e os dados USB publicados pelo IORegistry.
+5. Use o status da menu bar ou o cabeçalho de Diagnostics para confirmar a
+   evidência de conexão apresentada pelo `DeviceSession`; os detalhes USB
+   publicados pelo IORegistry permanecem no Diagnostics.
 6. Se desejar preview, escolha **Start Preview**; aceite a permissão de câmera
    somente se o macOS a solicitar após essa ação.
 7. Use **Refresh Read-Only Inspection** para iniciar uma inspeção UVC somente-leitura
