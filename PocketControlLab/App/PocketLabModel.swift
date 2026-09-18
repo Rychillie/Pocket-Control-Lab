@@ -100,6 +100,9 @@ final class DeviceSession {
 
     var device: PocketDevice?
     var cameraAuthorization: CameraAuthorization = .notDetermined
+    private(set) var passiveDiscoveryPhase: PassiveDiscoveryPhase = .starting
+    private(set) var cameraMatchStatus: CameraMatchStatus = .notChecked
+    private(set) var directUVCAvailability: DirectUVCAvailability = .unknown
     var cameraInfo: CameraDeviceInfo?
     var standardControls = UVCControlID.allCases.map { UVCStandardControlState.idle(control: $0) }
     var extensionUnitSelectors = (UInt8(1)...UInt8(3)).map { ExtensionUnitSelectorState.idle(selector: $0) }
@@ -126,6 +129,7 @@ final class DeviceSession {
     @ObservationIgnored private let preview: any PreviewControlling
     @ObservationIgnored private let writeAuthorizer = SessionWriteAuthorizer()
     @ObservationIgnored private var usbMonitor: (any DeviceMonitoring)?
+    @ObservationIgnored private var matchedPreviewSource: (any CameraPreviewSource)?
     @ObservationIgnored private var passiveDiscoveryGeneration: UInt64 = 0
     @ObservationIgnored private var permissionTask: Task<Void, Never>?
     @ObservationIgnored private var inspectionTask: Task<Void, Never>?
@@ -142,6 +146,10 @@ final class DeviceSession {
     @ObservationIgnored private var transportSafetyTaskID: UUID?
     @ObservationIgnored private var pendingPanTiltAxes: Set<PanTiltAxis> = []
     @ObservationIgnored private var connectionGeneration: UInt64 = 0
+    @ObservationIgnored private var directUVCAvailabilityGeneration: UInt64?
+    @ObservationIgnored private var hasConnectedDeviceDuringDiscovery = false
+    @ObservationIgnored private var hasPendingDeviceTransition = false
+    @ObservationIgnored private var pendingDeviceTransition: PocketDevice?
     @ObservationIgnored private var transitionTask: Task<Void, Never>?
     @ObservationIgnored private var previewStartRequestedWhilePermissionPending = false
     @ObservationIgnored private var hasLoggedSessionStart = false
@@ -157,6 +165,7 @@ final class DeviceSession {
         directTransport = dependencies.transport
         standardControlService = dependencies.standardControls
         extensionUnitService = dependencies.extensionUnit
+        cameraAuthorization = dependencies.camera.currentVideoAuthorization()
     }
 
     /// Passive: starts only the IORegistry monitor. It never requests camera
@@ -165,6 +174,14 @@ final class DeviceSession {
         guard usbMonitor == nil else {
             return
         }
+
+        passiveDiscoveryPhase = .starting
+        hasConnectedDeviceDuringDiscovery = false
+        cameraMatchStatus = .notChecked
+        matchedPreviewSource = nil
+        directUVCAvailability = .unknown
+        directUVCAvailabilityGeneration = nil
+        cameraAuthorization = dependencies.camera.currentVideoAuthorization()
 
         if !hasLoggedSessionStart {
             hasLoggedSessionStart = true
@@ -190,6 +207,10 @@ final class DeviceSession {
         usbMonitor?.stop()
         usbMonitor = nil
         transitionTask?.cancel()
+        hasPendingDeviceTransition = false
+        pendingDeviceTransition = nil
+        hasConnectedDeviceDuringDiscovery = false
+        passiveDiscoveryPhase = .starting
         enterSafeState(
             reason: "PASSIVE_DISCOVERY_STOPPED",
             clearDevice: true,
@@ -198,14 +219,37 @@ final class DeviceSession {
         previewStatus = "Passive discovery stopped"
     }
 
+    /// User-initiated and passive: asks the existing monitor for another
+    /// IORegistry snapshot. It never requests permission, starts preview, or
+    /// opens the UVC transport.
+    func refreshPassiveDetection() {
+        usbMonitor?.refresh()
+    }
+
     var isPocketConnected: Bool {
         device != nil
     }
 
     var canEnableUVCWrites: Bool {
         device?.supportsPocket4ControlProfile == true
+            && cameraMatchStatus != .multiple
             && standardControls.contains(where: \.isWriteReady)
             && device?.locationID != nil
+    }
+
+    var connectionPresentation: PocketConnectionPresentationState {
+        PocketConnectionPresentationState(
+            evidence: PocketConnectionEvidence(
+                discoveryPhase: passiveDiscoveryPhase,
+                identification: device?.identification,
+                didDisconnectAfterConnection: hasConnectedDeviceDuringDiscovery && device == nil,
+                cameraAuthorization: cameraAuthorization,
+                cameraMatchStatus: cameraMatchStatus,
+                directUVCAvailability: directUVCAvailability,
+                connectionGeneration: connectionGeneration,
+                directUVCAvailabilityGeneration: directUVCAvailabilityGeneration
+            )
+        )
     }
 
     var writeAvailabilityDescription: String {
@@ -215,6 +259,10 @@ final class DeviceSession {
 
         guard device.supportsPocket4ControlProfile else {
             return "\(device.displayName) was detected automatically, but its UVC control profile has not been validated. Inspection and writes are blocked."
+        }
+
+        guard cameraMatchStatus != .multiple else {
+            return "More than one matching camera is connected. Choose a camera before enabling direct UVC writes."
         }
 
         guard device.locationID != nil else {
@@ -266,6 +314,7 @@ final class DeviceSession {
             return
         }
 
+        cameraAuthorization = dependencies.camera.currentVideoAuthorization()
         switch cameraAuthorization {
         case .authorized:
             configurePreview(for: device)
@@ -294,9 +343,10 @@ final class DeviceSession {
     /// for the current verified connection. It never sends SET_CUR.
     func refreshReadOnlyInspection() {
         guard let device, device.supportsPocket4ControlProfile,
+              cameraMatchStatus != .multiple,
               let connection = activeTransportConnection
         else {
-            logger.log("INSPECTION_SKIPPED", "A verified Pocket 4 USB control profile and Location ID are required.")
+            logger.log("INSPECTION_SKIPPED", "A verified Pocket 4 USB control profile, an unambiguous camera match, and a Location ID are required.")
             return
         }
 
@@ -380,9 +430,10 @@ final class DeviceSession {
 
     func refreshExtensionSelector(_ selector: UInt8) {
         guard let device, device.supportsPocket4ControlProfile,
+              cameraMatchStatus != .multiple,
               let connection = activeTransportConnection
         else {
-            logger.log("XU_REFRESH_SKIPPED", "A verified Pocket 4 USB control profile is required.")
+            logger.log("XU_REFRESH_SKIPPED", "A verified Pocket 4 USB control profile and an unambiguous camera match are required.")
             return
         }
 
@@ -537,6 +588,9 @@ final class DeviceSession {
             let shouldStartPreview = previewStartRequestedWhilePermissionPending
             previewStartRequestedWhilePermissionPending = false
             if authorization == .authorized {
+                if let device {
+                    refreshCameraEvidence(for: device)
+                }
                 previewStatus = "Camera permission authorized — choose Start Preview"
                 if shouldStartPreview {
                     requestPreviewStart()
@@ -559,11 +613,31 @@ final class DeviceSession {
             return
         }
 
+        passiveDiscoveryPhase = .active
+
+        if hasPendingDeviceTransition {
+            let pendingIdentity = pendingDeviceTransition?.connectionIdentity
+            let replacementIdentity = replacement?.connectionIdentity
+            if pendingIdentity == replacementIdentity {
+                // A stable polling update arrived while the direct transport
+                // invalidation for this same connection is still pending.
+                // Keep the newest metadata, but never restart the transition.
+                pendingDeviceTransition = replacement
+                return
+            }
+
+            transitionTask?.cancel()
+            hasPendingDeviceTransition = false
+            pendingDeviceTransition = nil
+        }
+
         let previousConnectionIdentity = device?.connectionIdentity
         let replacementConnectionIdentity = replacement?.connectionIdentity
         guard previousConnectionIdentity != replacementConnectionIdentity else {
-            // Changes to published metadata do not restart any session work.
+            // A stable passive update may still reflect a TCC, AVFoundation,
+            // or published-metadata change. It never restarts preview or UVC.
             device = replacement
+            refreshCameraEvidence(for: replacement)
             return
         }
 
@@ -573,6 +647,8 @@ final class DeviceSession {
             clearDevice: true,
             stopPreview: true
         )
+        hasPendingDeviceTransition = true
+        pendingDeviceTransition = replacement
 
         // Direct transport invalidation is awaited before a replacement is
         // published. That ordering prevents any delayed request from binding
@@ -593,18 +669,27 @@ final class DeviceSession {
 
         device = replacement
         transitionTask = nil
+        hasPendingDeviceTransition = false
+        pendingDeviceTransition = nil
 
         guard let replacement else {
+            cameraMatchStatus = .notChecked
+            matchedPreviewSource = nil
             previewStatus = "No DJI Osmo Pocket detected"
             logger.log("DEVICE_DISCONNECTED")
             return
         }
+
+        hasConnectedDeviceDuringDiscovery = true
+        cameraAuthorization = dependencies.camera.currentVideoAuthorization()
 
         logger.log("DEVICE_CONNECTED", replacement.identification.label)
         logger.log("USB_IDENTITY", "VID=0x\(replacement.formattedVendorID) PID=0x\(replacement.formattedProductID)")
         logger.log("USB_LINK", "\(replacement.linkSpeed.displayValue) · \(replacement.deviceState)")
 
         guard replacement.supportsPocket4ControlProfile else {
+            cameraMatchStatus = .notChecked
+            matchedPreviewSource = nil
             let reason = "\(replacement.displayName) was detected automatically, but this build has no validated Pocket 4 UVC control profile for it."
             logger.log("DEVICE_DETECTED_UNSUPPORTED_PROFILE", reason)
             previewStatus = "\(replacement.displayName) detected — controls unavailable"
@@ -617,8 +702,61 @@ final class DeviceSession {
             return
         }
 
+        refreshCameraEvidence(for: replacement)
+
+        guard cameraMatchStatus != .multiple else {
+            // `refreshCameraEvidence` has already retired any active control
+            // capability. Do not overwrite its fail-closed Diagnostics state
+            // with a generic ready message while matching is ambiguous.
+            return
+        }
+
         previewStatus = "Pocket 4 connected — choose Start Preview or Refresh Read-Only Inspection"
         logger.log("DEVICE_READY_FOR_EXPLICIT_ACTION")
+    }
+
+    /// Updates presentation evidence only. Both calls are read-only: the
+    /// authorization query never prompts, and matching never constructs an
+    /// AVCaptureSession, opens USB, or triggers UVC traffic.
+    private func refreshCameraEvidence(for candidate: PocketDevice?) {
+        cameraAuthorization = dependencies.camera.currentVideoAuthorization()
+
+        guard let candidate, candidate.supportsPocket4ControlProfile else {
+            cameraMatchStatus = .notChecked
+            matchedPreviewSource = nil
+            return
+        }
+
+        guard cameraAuthorization == .authorized else {
+            cameraMatchStatus = .notChecked
+            matchedPreviewSource = nil
+            return
+        }
+
+        let previousMatchStatus = cameraMatchStatus
+        switch dependencies.camera.cameraMatch(for: candidate) {
+        case .none:
+            cameraMatchStatus = .none
+            matchedPreviewSource = nil
+        case let .single(source):
+            cameraMatchStatus = .single
+            matchedPreviewSource = source
+        case .multiple:
+            cameraMatchStatus = .multiple
+            matchedPreviewSource = nil
+        }
+
+        // A transition from an unambiguous camera to ambiguity must fail
+        // closed: stop preview, revoke writes, cancel direct work, and retire
+        // the transport generation. It does not select a candidate.
+        if cameraMatchStatus == .multiple, previousMatchStatus != .multiple {
+            previewStatus = "More than one matching camera is connected"
+            enterSafeState(
+                reason: "CAMERA_MATCH_AMBIGUOUS",
+                clearDevice: false,
+                stopPreview: true
+            )
+        }
     }
 
     @discardableResult
@@ -633,6 +771,8 @@ final class DeviceSession {
         // registry identity itself has not changed.
         connectionGeneration &+= 1
         let invalidationGeneration = connectionGeneration
+        directUVCAvailability = .unknown
+        directUVCAvailabilityGeneration = nil
 
         isWriteModeEnabled = false
         writeAuthorizer.revoke()
@@ -668,6 +808,8 @@ final class DeviceSession {
         if clearDevice {
             device = nil
             cameraInfo = nil
+            cameraMatchStatus = .notChecked
+            matchedPreviewSource = nil
             resetProtocolState(
                 controls: UVCControlID.allCases.map { UVCStandardControlState.idle(control: $0) },
                 selectors: (UInt8(1)...UInt8(3)).map { ExtensionUnitSelectorState.idle(selector: $0) }
@@ -717,7 +859,16 @@ final class DeviceSession {
     }
 
     private func configurePreview(for device: PocketDevice) {
-        guard let source = dependencies.camera.previewSource(for: device) else {
+        refreshCameraEvidence(for: device)
+
+        guard cameraMatchStatus != .multiple else {
+            cameraInfo = nil
+            previewStatus = "More than one matching camera is connected"
+            logger.log("PREVIEW_SKIPPED", "AVFoundation matching is ambiguous; preview remains fail-closed.")
+            return
+        }
+
+        guard let source = matchedPreviewSource else {
             cameraInfo = nil
             previewStatus = "Pocket 4 video device not visible to AVFoundation"
             logger.log("AVCAPTURE_DEVICE_NOT_FOUND")
@@ -749,6 +900,11 @@ final class DeviceSession {
         let taskID = UUID()
         inspectionTaskID = taskID
         isInspecting = true
+        // A new explicit inspection supersedes any previous availability
+        // result. Rendering this reset remains passive; only the task below
+        // is allowed to activate the transport and perform GET requests.
+        directUVCAvailability = .unknown
+        directUVCAvailabilityGeneration = nil
         let cmioObservations = dependencies.camera.inspectStandardControls(camera: cameraInfo, pocket: device)
 
         if cmioObservations.isEmpty {
@@ -790,6 +946,7 @@ final class DeviceSession {
                 cmioObservations: cmioObservations
             )
             let extensionUnit = await extensionUnitService.inspectAll(connection: connection)
+            let availability = await directTransport.availability(for: connection)
 
             guard !Task.isCancelled,
                   self.activeTransportConnection == connection,
@@ -800,6 +957,8 @@ final class DeviceSession {
 
             standardControls = controls
             extensionUnitSelectors = extensionUnit
+            directUVCAvailability = availability
+            directUVCAvailabilityGeneration = connection.generation
             pendingPanTiltAxes.removeAll()
             seedRequestedValues(from: controls)
             isInspecting = false
@@ -812,9 +971,10 @@ final class DeviceSession {
 
     private func captureSnapshot(label: String) {
         guard let device, device.supportsPocket4ControlProfile,
+              cameraMatchStatus != .multiple,
               let connection = activeTransportConnection
         else {
-            logger.log("SNAPSHOT_\(label)_SKIPPED", "A verified Pocket 4 USB control profile is required.")
+            logger.log("SNAPSHOT_\(label)_SKIPPED", "A verified Pocket 4 USB control profile and an unambiguous camera match are required.")
             return
         }
 

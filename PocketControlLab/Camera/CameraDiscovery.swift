@@ -38,6 +38,14 @@ enum CameraAuthorization: Equatable, Sendable {
 }
 
 enum CameraDiscovery {
+    /// Reads the process's existing TCC state without presenting a permission
+    /// prompt. Passive discovery uses this only to describe availability; the
+    /// explicit preview action remains the sole permission-request path.
+    @MainActor
+    static func currentVideoAuthorization() -> CameraAuthorization {
+        CameraAuthorization(status: AVCaptureDevice.authorizationStatus(for: .video))
+    }
+
     @MainActor
     static func requestVideoAccess() async -> CameraAuthorization {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
@@ -54,7 +62,14 @@ enum CameraDiscovery {
         return CameraAuthorization(status: AVCaptureDevice.authorizationStatus(for: .video))
     }
 
-    static func pocketCamera(for pocket: PocketDevice) -> AVCaptureDevice? {
+    /// Finds an unambiguous AVFoundation source for the observed USB Pocket.
+    /// This never requests TCC access or constructs an AVCaptureSession.
+    ///
+    /// An exact Pocket token is preferred over the intentionally narrower
+    /// generic-DJI fallback, but multiple candidates at either confidence
+    /// level are reported as ambiguous rather than selecting the first one.
+    @MainActor
+    static func cameraMatch(for pocket: PocketDevice) -> CameraMatch {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.external],
             mediaType: .video,
@@ -74,10 +89,17 @@ enum CameraDiscovery {
             return (device, candidate)
         }
 
-        if let exactMatch = devicesWithNormalizedIdentity.first(where: {
+        let exactMatches = devicesWithNormalizedIdentity.filter {
             $0.1.contains(pocket.cameraMatchingToken)
-        }) {
-            return exactMatch.0
+        }
+
+        switch exactMatches.count {
+        case 1:
+            return .single(previewSource(for: exactMatches[0].0))
+        case 2...:
+            return .multiple
+        default:
+            break
         }
 
         // Some UVC drivers publish a generic DJI camera name. It is safe to
@@ -85,11 +107,18 @@ enum CameraDiscovery {
         // exact validated Pocket 4 profile and it produces one unambiguous
         // external-camera candidate. It never broadens UVC control matching.
         guard pocket.supportsPocket4ControlProfile else {
-            return nil
+            return .none
         }
 
         let djiCandidates = devicesWithNormalizedIdentity.filter { $0.1.contains("dji") }
-        return djiCandidates.count == 1 ? djiCandidates[0].0 : nil
+        switch djiCandidates.count {
+        case 0:
+            return .none
+        case 1:
+            return .single(previewSource(for: djiCandidates[0].0))
+        default:
+            return .multiple
+        }
     }
 
     static func describe(_ device: AVCaptureDevice) -> CameraDeviceInfo {
@@ -156,5 +185,13 @@ enum CameraDiscovery {
             return ""
         }
         return value.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(String.init).joined()
+    }
+
+    @MainActor
+    private static func previewSource(for device: AVCaptureDevice) -> any CameraPreviewSource {
+        AVFoundationCameraPreviewSource(
+            device: device,
+            cameraInfo: describe(device)
+        )
     }
 }

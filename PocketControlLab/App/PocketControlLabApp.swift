@@ -25,37 +25,22 @@ struct PocketControlLabApp: App {
     }
 }
 
-/// A deliberately small, privacy-safe status projection for the menu bar.
-/// It has no access to device identifiers, preview state, logs, or UVC data.
-struct MenuBarPresentation: Equatable {
-    let connectionText: String
-    let statusText = "Passive detection only"
-    let systemImage: String
-
-    init(identification: PocketIdentification?) {
-        if identification != nil {
-            connectionText = "Pocket detected"
-            systemImage = "camera.fill"
-        } else {
-            connectionText = "No Pocket connected"
-            systemImage = "camera"
-        }
-    }
-
-    var accessibilityLabel: String {
-        "Pocket Control Lab: \(connectionText). \(statusText). Diagnostics actions are explicit."
-    }
-}
-
 private struct MenuBarExtraLabel: View {
-    let session: DeviceSession
+    @Bindable var session: DeviceSession
 
     var body: some View {
-        let presentation = MenuBarPresentation(identification: session.device?.identification)
+        let presentation = session.connectionPresentation
 
-        Image(systemName: presentation.systemImage)
-            .accessibilityLabel(presentation.accessibilityLabel)
-            .help(presentation.accessibilityLabel)
+        HStack(spacing: 3) {
+            Image(systemName: presentation.systemImage)
+                .symbolRenderingMode(.hierarchical)
+
+            MenuBarSeverityDot(severity: presentation.severity)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(presentation.accessibilityLabel)
+        .accessibilityHint("Opens Pocket Control Lab connection status and safe actions.")
+        .help(presentation.accessibilityLabel)
     }
 }
 
@@ -63,33 +48,67 @@ private struct MenuBarContent: View {
     @Bindable var session: DeviceSession
     @Environment(\.openWindow) private var openWindow
 
-    private var presentation: MenuBarPresentation {
-        MenuBarPresentation(identification: session.device?.identification)
-    }
-
     var body: some View {
+        let presentation = session.connectionPresentation
+
         Text("Pocket Control Lab")
             .font(.headline)
-        Text(presentation.connectionText)
-        Text(presentation.statusText)
+        Text(presentation.title)
+            .font(.subheadline.weight(.semibold))
+        Text(presentation.detail)
             .foregroundStyle(.secondary)
 
         Divider()
 
-        Button("Open Diagnostics", systemImage: "wrench.and.screwdriver") {
-            openWindow(id: "diagnostics")
-        }
-        .accessibilityHint("Opens the engineering diagnostics window.")
+        switch presentation.nextAction {
+        case .refreshDetection:
+            Button("Refresh Detection", systemImage: "arrow.clockwise") {
+                session.refreshPassiveDetection()
+            }
+            .accessibilityHint("Performs one additional passive USB detection scan.")
 
-        Button("Set Up Camera — Coming Soon", systemImage: "camera.badge.ellipsis") {}
-            .disabled(true)
-            .accessibilityLabel("Set Up Camera, unavailable")
-            .accessibilityHint("Camera setup is not available in this version.")
+            Divider()
+
+            diagnosticsButton
+        case .openDiagnostics, nil:
+            diagnosticsButton
+        }
 
         Divider()
 
         Button("Quit", systemImage: "power") {
             NSApplication.shared.terminate(nil)
+        }
+    }
+
+    private var diagnosticsButton: some View {
+        Button("Open Diagnostics", systemImage: "wrench.and.screwdriver") {
+            openWindow(id: "diagnostics")
+        }
+        .accessibilityHint("Opens the engineering diagnostics window.")
+    }
+}
+
+private struct MenuBarSeverityDot: View {
+    let severity: ConnectionSeverity
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .accessibilityHidden(true)
+    }
+
+    private var color: Color {
+        switch severity {
+        case .neutral:
+            .secondary
+        case .attention:
+            .blue
+        case .warning:
+            .orange
+        case .ready:
+            .green
         }
     }
 }

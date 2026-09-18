@@ -45,6 +45,17 @@ Read the full [product direction and roadmap](Docs/PRODUCT_DIRECTION.md).
   It polls published IORegistry properties every 1.5 seconds, independently of
   camera permission. Passive discovery does not request permission, start a
   preview, perform UVC I/O, or send a UVC write.
+- A typed, privacy-safe connection presentation state drives both the menu-bar
+  status item and Diagnostics header. It combines passive discovery, USB
+  profile evidence, non-prompting camera authorization, read-only camera
+  visibility, and any cached direct-UVC inspection result without exposing
+  hardware identifiers or causing platform work merely to render a status.
+- The menu bar offers only safe context actions: **Refresh Detection** asks the
+  existing passive monitor for a fresh IORegistry snapshot, and **Open
+  Diagnostics** opens the laboratory window. It never requests camera access,
+  starts preview, or opens the UVC transport. Direct-UVC availability remains
+  unknown until the operator explicitly starts the existing read-only
+  inspection.
 - A **verified Pocket 4 control profile** requires the known `VID 2CA3` / `PID
   0023` pair and an observed normalized `OsmoPocket4` product token.
 - Other DJI Osmo Pocket-family devices can be shown as detected, but they are
@@ -94,6 +105,7 @@ App lifecycle owner
    │
    └── shared DeviceSession
           ├── SwiftUI scenes issue semantic intents
+          ├── typed connection presentation for menu bar and Diagnostics
           ├── AVFoundation preview
           ├── passive IORegistry USB discovery
           ├── guarded standard UVC transport

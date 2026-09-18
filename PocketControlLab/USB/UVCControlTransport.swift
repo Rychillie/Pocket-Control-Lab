@@ -264,6 +264,10 @@ protocol UVCTransporting: Sendable {
     func activate(_ connection: UVCTransportConnection) async
     func invalidate() async
     func invalidate(upTo generation: UInt64) async
+    /// Reports only the cached outcome of an earlier bridge-open attempt for
+    /// this active connection. Implementations must not open a bridge merely
+    /// to answer this read-only presentation query.
+    func availability(for connection: UVCTransportConnection) async -> DirectUVCAvailability
     func setWritesEnabled(_ enabled: Bool, for connection: UVCTransportConnection) async
     func disableWrites() async
     func perform(
@@ -379,6 +383,25 @@ actor DirectUVCTransport: UVCTransporting {
 
     func disableWrites() {
         writesEnabled = false
+    }
+
+    /// A presentation-safe view of the current bridge state. This must stay
+    /// separate from `ensureSession(for:)`: asking whether direct UVC is
+    /// available never opens an IOKit user client or changes transport state.
+    func availability(for connection: UVCTransportConnection) -> DirectUVCAvailability {
+        guard activeConnection == connection else {
+            return .unknown
+        }
+
+        if blockedConnection == connection {
+            return .blocked
+        }
+
+        if sessionConnection == connection, session != nil {
+            return .available
+        }
+
+        return .unknown
     }
 
     func perform(

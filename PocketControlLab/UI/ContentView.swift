@@ -5,7 +5,10 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            LabHeaderView(device: session.device, isInspecting: session.isInspecting)
+            LabHeaderView(
+                presentation: session.connectionPresentation,
+                isInspecting: session.isInspecting
+            )
 
             VSplitView {
                 HSplitView {
@@ -14,7 +17,8 @@ struct ContentView: View {
                         status: session.previewStatus,
                         cameraInfo: session.cameraInfo,
                         isPreviewRunning: session.isPreviewRunning,
-                        canStartPreview: session.device?.supportsPocket4ControlProfile == true,
+                        canStartPreview: session.device?.supportsPocket4ControlProfile == true
+                            && session.cameraMatchStatus != .multiple,
                         requestPreviewStart: session.requestPreviewStart,
                         stopPreview: session.stopPreview
                     )
@@ -51,7 +55,10 @@ struct ContentView: View {
                     session.refreshReadOnlyInspection()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                .disabled(session.device?.supportsPocket4ControlProfile != true)
+                .disabled(
+                    session.device?.supportsPocket4ControlProfile != true
+                        || session.cameraMatchStatus == .multiple
+                )
                 .accessibilityLabel("Refresh safe device and UVC inspection")
                 .accessibilityHint("Available only for the verified Pocket 4 USB control profile.")
 
@@ -63,7 +70,7 @@ struct ContentView: View {
 }
 
 private struct LabHeaderView: View {
-    let device: PocketDevice?
+    let presentation: PocketConnectionPresentationState
     let isInspecting: Bool
 
     var body: some View {
@@ -78,17 +85,24 @@ private struct LabHeaderView: View {
 
             Spacer()
 
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(device == nil ? .red : .green)
-                    .frame(width: 10, height: 10)
-                    .accessibilityHidden(true)
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack(spacing: 8) {
+                    Image(systemName: presentation.systemImage)
+                        .symbolRenderingMode(.hierarchical)
 
-                Text(connectionStatus)
-                    .font(.headline)
+                    HeaderSeverityDot(severity: presentation.severity)
+
+                    Text(presentation.title)
+                        .font(.headline)
+                }
+
+                Text(presentation.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(connectionStatus)
+            .accessibilityLabel(presentation.accessibilityLabel)
 
             if isInspecting {
                 ProgressView()
@@ -100,14 +114,28 @@ private struct LabHeaderView: View {
         .padding(.vertical, 10)
         .background(.bar)
     }
+}
 
-    private var connectionStatus: String {
-        guard let device else {
-            return "No Pocket Connected"
+private struct HeaderSeverityDot: View {
+    let severity: ConnectionSeverity
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 10, height: 10)
+            .accessibilityHidden(true)
+    }
+
+    private var color: Color {
+        switch severity {
+        case .neutral:
+            .secondary
+        case .attention:
+            .blue
+        case .warning:
+            .orange
+        case .ready:
+            .green
         }
-
-        return device.supportsPocket4ControlProfile
-            ? "Pocket 4 Connected"
-            : "DJI Osmo Pocket Detected"
     }
 }

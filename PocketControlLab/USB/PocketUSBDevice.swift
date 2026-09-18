@@ -179,14 +179,12 @@ enum PocketUSBDeviceScanner {
 @MainActor
 final class PocketUSBRegistryMonitor {
     private var timer: Timer?
-    private var lastDevice: PocketDevice?
-    private var lastConnectionIdentity: ConnectionIdentity?
     private let interval: TimeInterval
-    private let onChange: (PocketDevice?) -> Void
+    private let onUpdate: (PocketDevice?) -> Void
 
     init(interval: TimeInterval = 1.5, onChange: @escaping (PocketDevice?) -> Void) {
         self.interval = interval
-        self.onChange = onChange
+        onUpdate = onChange
     }
 
     func start() {
@@ -205,24 +203,12 @@ final class PocketUSBRegistryMonitor {
         timer = nil
     }
 
-    private func refresh() {
+    /// Reads only published IORegistry properties and always publishes a
+    /// snapshot. Publishing stable snapshots lets the session refresh its
+    /// non-prompting camera evidence without restarting a connection.
+    func refresh() {
         let currentDevice = PocketUSBDeviceScanner.currentPocketDevice()
-        let currentConnectionIdentity = currentDevice?.connectionIdentity
-        guard currentConnectionIdentity != lastConnectionIdentity else {
-            // Keep the most recent read-only metadata for a stable connection,
-            // and forward it to the session without restarting preview or UVC
-            // discovery when a transient IORegistry property changes.
-            guard currentDevice != lastDevice else {
-                return
-            }
-            lastDevice = currentDevice
-            onChange(currentDevice)
-            return
-        }
-
-        lastDevice = currentDevice
-        lastConnectionIdentity = currentConnectionIdentity
-        onChange(currentDevice)
+        onUpdate(currentDevice)
     }
 }
 
@@ -231,6 +217,7 @@ final class PocketUSBRegistryMonitor {
 @MainActor
 protocol DeviceMonitoring: AnyObject {
     func start()
+    func refresh()
     func stop()
 }
 
