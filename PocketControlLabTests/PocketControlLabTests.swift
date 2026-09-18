@@ -18,55 +18,394 @@ private enum ExpectedUVCPolicyContract {
 }
 
 struct PocketControlLabTests {
-    @Test("Menu-bar presentation stays generic through passive connection changes")
+    @Test("Connection presentation maps every status priority without exposing identifiers")
     @MainActor
-    func menuBarPresentationFollowsPassiveConnectionChanges() async {
+    func connectionPresentationMapsEveryPriorityAndVisualAttribute() {
+        struct ExpectedPresentation {
+            let name: String
+            let evidence: PocketConnectionEvidence
+            let kind: PocketConnectionPresentationState.Kind
+            let title: String
+            let severity: ConnectionSeverity
+            let systemImage: String
+            let nextAction: ConnectionNextAction?
+        }
+
+        func evidence(
+            phase: PassiveDiscoveryPhase = .active,
+            identification: PocketIdentification? = .confirmedPocket4VIDPID,
+            disconnected: Bool = false,
+            authorization: CameraAuthorization = .authorized,
+            match: CameraMatchStatus = .single,
+            directUVC: DirectUVCAvailability = .available,
+            directUVCGeneration: UInt64? = 41
+        ) -> PocketConnectionEvidence {
+            PocketConnectionEvidence(
+                discoveryPhase: phase,
+                identification: identification,
+                didDisconnectAfterConnection: disconnected,
+                cameraAuthorization: authorization,
+                cameraMatchStatus: match,
+                directUVCAvailability: directUVC,
+                connectionGeneration: 41,
+                directUVCAvailabilityGeneration: directUVCGeneration
+            )
+        }
+
+        // Each case deliberately supplies lower-priority evidence too, so the
+        // table also locks in the required precedence order.
+        let cases: [ExpectedPresentation] = [
+            ExpectedPresentation(
+                name: "initial passive scan",
+                evidence: evidence(
+                    phase: .starting,
+                    identification: .djiOsmoPocketFamily,
+                    disconnected: true,
+                    authorization: .denied,
+                    match: .multiple,
+                    directUVC: .blocked
+                ),
+                kind: .lookingForPocket,
+                title: "Looking for a DJI Osmo Pocket…",
+                severity: .neutral,
+                systemImage: "magnifyingglass",
+                nextAction: nil
+            ),
+            ExpectedPresentation(
+                name: "disconnect after a connection",
+                evidence: evidence(
+                    identification: nil,
+                    disconnected: true,
+                    authorization: .denied,
+                    match: .multiple,
+                    directUVC: .blocked
+                ),
+                kind: .disconnected,
+                title: "Pocket disconnected.",
+                severity: .attention,
+                systemImage: "cable.connector.slash",
+                nextAction: .refreshDetection
+            ),
+            ExpectedPresentation(
+                name: "no Pocket",
+                evidence: evidence(
+                    identification: nil,
+                    authorization: .denied,
+                    match: .multiple,
+                    directUVC: .blocked
+                ),
+                kind: .noPocketConnected,
+                title: "No Pocket connected",
+                severity: .neutral,
+                systemImage: "camera",
+                nextAction: .refreshDetection
+            ),
+            ExpectedPresentation(
+                name: "unsupported Pocket family",
+                evidence: evidence(
+                    identification: .djiOsmoPocketFamily,
+                    authorization: .denied,
+                    match: .multiple,
+                    directUVC: .blocked
+                ),
+                kind: .unsupportedPocketFamily,
+                title: "DJI Osmo Pocket detected. This model is not supported for control yet.",
+                severity: .warning,
+                systemImage: "exclamationmark.triangle",
+                nextAction: .openDiagnostics
+            ),
+            ExpectedPresentation(
+                name: "camera access unavailable",
+                evidence: evidence(
+                    authorization: .denied,
+                    match: .multiple,
+                    directUVC: .blocked
+                ),
+                kind: .cameraAccessUnavailable,
+                title: "Camera access is unavailable. USB detection still works, but preview cannot start.",
+                severity: .warning,
+                systemImage: "camera.badge.exclamationmark",
+                nextAction: .openDiagnostics
+            ),
+            ExpectedPresentation(
+                name: "camera access restricted",
+                evidence: evidence(
+                    authorization: .restricted,
+                    match: .multiple,
+                    directUVC: .blocked
+                ),
+                kind: .cameraAccessUnavailable,
+                title: "Camera access is unavailable. USB detection still works, but preview cannot start.",
+                severity: .warning,
+                systemImage: "camera.badge.exclamationmark",
+                nextAction: .openDiagnostics
+            ),
+            ExpectedPresentation(
+                name: "camera access not determined",
+                evidence: evidence(
+                    authorization: .notDetermined,
+                    match: .multiple,
+                    directUVC: .blocked
+                ),
+                kind: .cameraAccessNeeded,
+                title: "Pocket 4 detected. Allow camera access to use preview.",
+                severity: .attention,
+                systemImage: "camera.badge.ellipsis",
+                nextAction: .openDiagnostics
+            ),
+            ExpectedPresentation(
+                name: "multiple camera matches",
+                evidence: evidence(match: .multiple, directUVC: .blocked),
+                kind: .multipleMatchingCameras,
+                title: "More than one matching camera is connected. Choose a camera before preview or control.",
+                severity: .warning,
+                systemImage: "camera.badge.ellipsis",
+                nextAction: .openDiagnostics
+            ),
+            ExpectedPresentation(
+                name: "no AVFoundation camera",
+                evidence: evidence(match: .none, directUVC: .blocked),
+                kind: .cameraNotVisible,
+                title: "Pocket 4 USB device detected, but a video device is not visible. Confirm Webcam Mode on the camera.",
+                severity: .attention,
+                systemImage: "video.slash",
+                nextAction: .openDiagnostics
+            ),
+            ExpectedPresentation(
+                name: "blocked direct UVC for active generation",
+                evidence: evidence(match: .single, directUVC: .blocked),
+                kind: .directUVCUnavailable,
+                title: "Camera is connected, but macOS did not provide safe direct UVC control access.",
+                severity: .warning,
+                systemImage: "slider.horizontal.3",
+                nextAction: .openDiagnostics
+            ),
+            ExpectedPresentation(
+                name: "verified authorized visible camera",
+                evidence: evidence(match: .single, directUVC: .available),
+                kind: .readyToContinueSetup,
+                title: "Pocket 4 connected and ready to continue setup.",
+                severity: .ready,
+                systemImage: "checkmark.circle.fill",
+                nextAction: .openDiagnostics
+            ),
+        ]
+
+        for expected in cases {
+            let presentation = PocketConnectionPresentationState(evidence: expected.evidence)
+            #expect(presentation.kind == expected.kind, "\(expected.name) kind")
+            #expect(presentation.title == expected.title, "\(expected.name) title")
+            #expect(presentation.severity == expected.severity, "\(expected.name) severity")
+            #expect(presentation.systemImage == expected.systemImage, "\(expected.name) SF Symbol")
+            #expect(presentation.nextAction == expected.nextAction, "\(expected.name) next action")
+            #expect(presentation.accessibilityLabel == "Pocket Control Lab: \(expected.title)")
+            #expect(!presentation.accessibilityLabel.contains("701"))
+            #expect(!presentation.accessibilityLabel.contains("0x"))
+            #expect(!presentation.accessibilityLabel.contains("test-preview-source"))
+        }
+
+        let staleBlockedEvidence = evidence(
+            match: .single,
+            directUVC: .blocked,
+            directUVCGeneration: 40
+        )
+        #expect(
+            PocketConnectionPresentationState(evidence: staleBlockedEvidence).kind == .readyToContinueSetup
+        )
+    }
+
+    @Test("The first empty passive scan and Refresh Detection remain presentation-only")
+    @MainActor
+    func passiveStatusFirstEmptyScanAndRefreshAreReadOnly() async {
         let fixture = makeFixture()
 
-        let noDevice = MenuBarPresentation(identification: nil)
-        #expect(noDevice.connectionText == "No Pocket connected")
-        #expect(noDevice.statusText == "Passive detection only")
-        #expect(noDevice.systemImage == "camera")
-        #expect(noDevice.accessibilityLabel == "Pocket Control Lab: No Pocket connected. Passive detection only. Diagnostics actions are explicit.")
-
-        let verifiedProfile = MenuBarPresentation(identification: .confirmedPocket4VIDPID)
-        let familyProfile = MenuBarPresentation(identification: .djiOsmoPocketFamily)
-        #expect(verifiedProfile == familyProfile)
-        #expect(verifiedProfile.connectionText == "Pocket detected")
-
+        #expect(fixture.session.connectionPresentation.kind == .lookingForPocket)
         fixture.session.startPassiveDiscovery()
-        let firstConnection = verifiedPocket(registryID: 701)
-        fixture.monitorFactory.latestMonitor?.emit(firstConnection)
-        #expect(await waitForDevice(fixture.session, registryID: firstConnection.registryID))
 
-        let connected = MenuBarPresentation(identification: fixture.session.device?.identification)
-        #expect(connected.connectionText == "Pocket detected")
-        #expect(connected.statusText == "Passive detection only")
-        #expect(connected.systemImage == "camera.fill")
-        #expect(connected.accessibilityLabel == "Pocket Control Lab: Pocket detected. Passive detection only. Diagnostics actions are explicit.")
-        #expect(!connected.accessibilityLabel.contains("701"))
-        #expect(!connected.accessibilityLabel.contains("0x"))
-
-        fixture.monitorFactory.latestMonitor?.emit(nil)
-        #expect(await waitForNoDevice(fixture.session))
-        #expect(MenuBarPresentation(identification: fixture.session.device?.identification) == noDevice)
-
-        let reconnected = unverifiedPocket(registryID: 702)
-        fixture.monitorFactory.latestMonitor?.emit(reconnected)
-        #expect(await waitForDevice(fixture.session, registryID: reconnected.registryID))
-        #expect(MenuBarPresentation(identification: fixture.session.device?.identification) == connected)
-
-        #expect(fixture.monitorFactory.monitorCount == 1)
+        #expect(fixture.session.connectionPresentation.kind == .noPocketConnected)
         #expect(fixture.monitorFactory.latestMonitor?.startCount == 1)
+        #expect(fixture.monitorFactory.latestMonitor?.refreshCount == 1)
         #expect(fixture.camera.permissionRequestCount == 0)
-        #expect(fixture.camera.previewSourceRequestCount == 0)
+        #expect(fixture.camera.cameraMatchRequestCount == 0)
         #expect(fixture.preview.startCount == 0)
+
+        let authorizationReadsBeforePresentation = fixture.camera.authorizationReadCount
+        let matchRequestsBeforePresentation = fixture.camera.cameraMatchRequestCount
+        for _ in 0..<3 {
+            #expect(fixture.session.connectionPresentation.title == "No Pocket connected")
+        }
+        #expect(fixture.camera.authorizationReadCount == authorizationReadsBeforePresentation)
+        #expect(fixture.camera.cameraMatchRequestCount == matchRequestsBeforePresentation)
+
+        fixture.session.refreshPassiveDetection()
+        await drainTasks()
+        #expect(fixture.monitorFactory.latestMonitor?.refreshCount == 2)
+        #expect(fixture.camera.permissionRequestCount == 0)
+        #expect(fixture.preview.startCount == 0)
+
         let requests = await fixture.transport.requestSnapshot()
+        let activatedConnections = await fixture.transport.activatedConnections()
         let standardInspectionCount = await fixture.standardInspector?.inspectionCount()
         let extensionInspectionCount = await fixture.extensionInspector?.inspectionCount()
         #expect(requests.isEmpty)
+        #expect(activatedConnections.isEmpty)
         #expect(standardInspectionCount == 0)
         #expect(extensionInspectionCount == 0)
+
+        fixture.session.stopPassiveDiscovery()
+    }
+
+    @Test("Stable passive scans refresh read-only camera visibility without starting hardware work")
+    @MainActor
+    func stablePassiveScanRefreshesCameraVisibility() async {
+        let fixture = makeFixture(
+            cameraAuthorization: .authorized,
+            cameraMatchStatus: CameraMatchStatus.none
+        )
+        let device = verifiedPocket(registryID: 701)
+
+        fixture.session.startPassiveDiscovery()
+        fixture.monitorFactory.latestMonitor?.emit(device)
+        #expect(await waitForDevice(fixture.session, registryID: device.registryID))
+        #expect(fixture.session.connectionPresentation.kind == .cameraNotVisible)
+
+        let matchRequestsBeforeRefresh = fixture.camera.cameraMatchRequestCount
+        fixture.camera.setCameraMatchStatus(.single)
+        fixture.session.refreshPassiveDetection()
+        await drainTasks()
+
+        #expect(fixture.session.connectionPresentation.kind == .readyToContinueSetup)
+        #expect(fixture.camera.cameraMatchRequestCount > matchRequestsBeforeRefresh)
+        #expect(fixture.camera.permissionRequestCount == 0)
+        #expect(fixture.preview.startCount == 0)
+        #expect((await fixture.transport.requestSnapshot()).isEmpty)
+        #expect((await fixture.transport.activatedConnections()).isEmpty)
+
+        let authorizationReadsBeforePresentation = fixture.camera.authorizationReadCount
+        let matchRequestsBeforePresentation = fixture.camera.cameraMatchRequestCount
+        let availabilityChecksBeforePresentation = await fixture.transport.availabilityCheckCount()
+        for _ in 0..<3 {
+            #expect(fixture.session.connectionPresentation.kind == .readyToContinueSetup)
+        }
+        #expect(fixture.camera.authorizationReadCount == authorizationReadsBeforePresentation)
+        #expect(fixture.camera.cameraMatchRequestCount == matchRequestsBeforePresentation)
+        #expect(await fixture.transport.availabilityCheckCount() == availabilityChecksBeforePresentation)
+        #expect(fixture.camera.permissionRequestCount == 0)
+        #expect(fixture.preview.startCount == 0)
+        #expect((await fixture.transport.requestSnapshot()).isEmpty)
+        #expect((await fixture.transport.activatedConnections()).isEmpty)
+
+        fixture.session.stopPassiveDiscovery()
+    }
+
+    @Test("Denied camera access retains the verified USB status without prompting")
+    @MainActor
+    func deniedCameraAccessRetainsUSBStatus() async {
+        let fixture = makeFixture(cameraAuthorization: .denied)
+        let device = verifiedPocket(registryID: 702)
+
+        fixture.session.startPassiveDiscovery()
+        fixture.monitorFactory.latestMonitor?.emit(device)
+        #expect(await waitForDevice(fixture.session, registryID: device.registryID))
+
+        #expect(fixture.session.isPocketConnected)
+        #expect(fixture.session.connectionPresentation.kind == .cameraAccessUnavailable)
+        #expect(fixture.session.connectionPresentation.title == "Camera access is unavailable. USB detection still works, but preview cannot start.")
+        #expect(fixture.camera.permissionRequestCount == 0)
+        #expect(fixture.camera.cameraMatchRequestCount == 0)
+        #expect(fixture.preview.startCount == 0)
+        #expect((await fixture.transport.requestSnapshot()).isEmpty)
+        #expect((await fixture.transport.activatedConnections()).isEmpty)
+
+        fixture.session.stopPassiveDiscovery()
+    }
+
+    @Test("Missing and ambiguous AVFoundation matches have distinct fail-closed outcomes")
+    @MainActor
+    func missingAndAmbiguousCameraMatchesStayFailClosed() async {
+        let missingFixture = makeFixture(
+            cameraAuthorization: .authorized,
+            cameraMatchStatus: CameraMatchStatus.none
+        )
+        let missingDevice = verifiedPocket(registryID: 703)
+
+        missingFixture.session.startPassiveDiscovery()
+        missingFixture.monitorFactory.latestMonitor?.emit(missingDevice)
+        #expect(await waitForDevice(missingFixture.session, registryID: missingDevice.registryID))
+        #expect(missingFixture.session.connectionPresentation.kind == .cameraNotVisible)
+        #expect(missingFixture.preview.startCount == 0)
+        missingFixture.session.stopPassiveDiscovery()
+
+        let ambiguousFixture = makeFixture(
+            cameraAuthorization: .authorized,
+            cameraMatchStatus: .multiple
+        )
+        let ambiguousDevice = verifiedPocket(registryID: 704)
+
+        ambiguousFixture.session.startPassiveDiscovery()
+        ambiguousFixture.monitorFactory.latestMonitor?.emit(ambiguousDevice)
+        #expect(await waitForDevice(ambiguousFixture.session, registryID: ambiguousDevice.registryID))
+        await drainTasks()
+
+        #expect(ambiguousFixture.session.cameraMatchStatus == .multiple)
+        #expect(ambiguousFixture.session.connectionPresentation.kind == .multipleMatchingCameras)
+        #expect(!ambiguousFixture.session.canEnableUVCWrites)
+
+        ambiguousFixture.session.requestPreviewStart()
+        ambiguousFixture.session.refreshReadOnlyInspection()
+        ambiguousFixture.session.unlockWrites()
+        await drainTasks()
+
+        #expect(ambiguousFixture.preview.startCount == 0)
+        #expect(!ambiguousFixture.session.isInspecting)
+        #expect(!ambiguousFixture.session.isWriteModeEnabled)
+        #expect((await ambiguousFixture.transport.requestSnapshot()).isEmpty)
+        #expect((await ambiguousFixture.transport.activatedConnections()).isEmpty)
+        #expect(await ambiguousFixture.standardInspector?.inspectionCount() == 0)
+        #expect(await ambiguousFixture.extensionInspector?.inspectionCount() == 0)
+
+        ambiguousFixture.session.stopPassiveDiscovery()
+    }
+
+    @Test("Direct UVC remains unknown until explicit inspection and resets on reconnect")
+    @MainActor
+    func directUVCBlockIsPublishedOnlyAfterInspectionAndResetsOnReconnect() async {
+        let fixture = makeFixture(
+            cameraAuthorization: .authorized,
+            cameraMatchStatus: .single,
+            directUVCAvailability: .blocked,
+            useProductionReadOnlyInspectors: true
+        )
+        let firstDevice = verifiedPocket(registryID: 705)
+        let reconnectedDevice = verifiedPocket(registryID: 706)
+
+        fixture.session.startPassiveDiscovery()
+        fixture.monitorFactory.latestMonitor?.emit(firstDevice)
+        #expect(await waitForDevice(fixture.session, registryID: firstDevice.registryID))
+        #expect(fixture.session.connectionPresentation.kind == .readyToContinueSetup)
+        #expect(await fixture.transport.availabilityCheckCount() == 0)
+        #expect((await fixture.transport.requestSnapshot()).isEmpty)
+
+        fixture.session.refreshReadOnlyInspection()
+        #expect(await waitForInspectionToFinish(fixture.session, transport: fixture.transport))
+        #expect(await fixture.transport.availabilityCheckCount() == 1)
+        #expect(fixture.session.connectionPresentation.kind == .directUVCUnavailable)
+
+        let availabilityChecksBeforePresentation = await fixture.transport.availabilityCheckCount()
+        for _ in 0..<3 {
+            #expect(fixture.session.connectionPresentation.kind == .directUVCUnavailable)
+        }
+        #expect(await fixture.transport.availabilityCheckCount() == availabilityChecksBeforePresentation)
+
+        fixture.monitorFactory.latestMonitor?.emit(nil)
+        #expect(await waitForNoDevice(fixture.session))
+        #expect(fixture.session.directUVCAvailability == .unknown)
+        #expect(fixture.session.connectionPresentation.kind == .disconnected)
+
+        fixture.monitorFactory.latestMonitor?.emit(reconnectedDevice)
+        #expect(await waitForDevice(fixture.session, registryID: reconnectedDevice.registryID))
+        #expect(fixture.session.directUVCAvailability == .unknown)
+        #expect(fixture.session.connectionPresentation.kind == .readyToContinueSetup)
 
         fixture.session.stopPassiveDiscovery()
     }
@@ -98,7 +437,10 @@ struct PocketControlLabTests {
     @Test("An explicit preview request asks for permission, but denial never starts preview")
     @MainActor
     func deniedPreviewRequestLeavesDiscoveryPassive() async {
-        let fixture = makeFixture(cameraAuthorization: .denied)
+        let fixture = makeFixture(
+            cameraAuthorization: .notDetermined,
+            permissionResult: .denied
+        )
         let device = verifiedPocket(registryID: 101)
 
         fixture.session.startPassiveDiscovery()
@@ -136,8 +478,8 @@ struct PocketControlLabTests {
         fixture.session.requestPreviewStart()
         #expect(await waitForPreviewStart(fixture.preview))
 
-        #expect(fixture.camera.permissionRequestCount == 1)
-        #expect(fixture.camera.previewSourceRequestCount == 1)
+        #expect(fixture.camera.permissionRequestCount == 0)
+        #expect(fixture.camera.cameraMatchRequestCount >= 2)
         #expect(fixture.session.isPreviewRunning)
         #expect(fixture.session.previewStatus == "Preview started")
 
@@ -1037,7 +1379,10 @@ private final class SessionFixture {
 @MainActor
 private func makeFixture(
     cameraAuthorization: CameraAuthorization = .notDetermined,
+    permissionResult: CameraAuthorization? = nil,
+    cameraMatchStatus: CameraMatchStatus? = nil,
     hasPreviewSource: Bool = true,
+    directUVCAvailability: DirectUVCAvailability = .unknown,
     useProductionReadOnlyInspectors: Bool = false,
     inspectionGate: AsyncGate? = nil,
     selectorRefreshGate: AsyncGate? = nil,
@@ -1047,11 +1392,13 @@ private func makeFixture(
 ) -> SessionFixture {
     let monitorFactory = FakeMonitorFactory()
     let camera = FakeCameraAccess(
-        authorizationResponse: cameraAuthorization,
+        currentAuthorization: cameraAuthorization,
+        permissionResult: permissionResult ?? cameraAuthorization,
+        cameraMatchStatus: cameraMatchStatus ?? (hasPreviewSource ? .single : .none),
         previewSource: hasPreviewSource ? FakePreviewSource() : nil
     )
     let preview = FakePreviewController()
-    let transport = FakeTransport()
+    let transport = FakeTransport(directUVCAvailability: directUVCAvailability)
     let clock = FakeClock(gate: clockGate)
 
     let standardInspector: FakeStandardControlInspector?
@@ -1131,7 +1478,9 @@ private final class FakeMonitorFactory {
 @MainActor
 private final class FakeMonitor: DeviceMonitoring {
     private let onChange: @MainActor (PocketDevice?) -> Void
+    private var currentDevice: PocketDevice?
     private(set) var startCount = 0
+    private(set) var refreshCount = 0
     private(set) var stopCount = 0
 
     init(onChange: @escaping @MainActor (PocketDevice?) -> Void) {
@@ -1140,6 +1489,12 @@ private final class FakeMonitor: DeviceMonitoring {
 
     func start() {
         startCount += 1
+        refresh()
+    }
+
+    func refresh() {
+        refreshCount += 1
+        onChange(currentDevice)
     }
 
     func stop() {
@@ -1147,38 +1502,66 @@ private final class FakeMonitor: DeviceMonitoring {
     }
 
     func emit(_ device: PocketDevice?) {
+        currentDevice = device
         onChange(device)
     }
 }
 
 @MainActor
 private final class FakeCameraAccess: CameraAccessing {
-    private let authorizationResponse: CameraAuthorization
+    private var currentAuthorization: CameraAuthorization
+    private let permissionResult: CameraAuthorization
+    private var configuredCameraMatchStatus: CameraMatchStatus
     private let configuredPreviewSource: (any CameraPreviewSource)?
     private let cmioObservations: [UVCControlID: CMIOControlObservation]
 
     private(set) var permissionRequestCount = 0
-    private(set) var previewSourceRequestCount = 0
+    private(set) var authorizationReadCount = 0
+    private(set) var cameraMatchRequestCount = 0
     private(set) var standardControlInspectionCount = 0
 
     init(
-        authorizationResponse: CameraAuthorization,
+        currentAuthorization: CameraAuthorization,
+        permissionResult: CameraAuthorization,
+        cameraMatchStatus: CameraMatchStatus,
         previewSource: (any CameraPreviewSource)?,
         cmioObservations: [UVCControlID: CMIOControlObservation] = [:]
     ) {
-        self.authorizationResponse = authorizationResponse
+        self.currentAuthorization = currentAuthorization
+        self.permissionResult = permissionResult
+        configuredCameraMatchStatus = cameraMatchStatus
         configuredPreviewSource = previewSource
         self.cmioObservations = cmioObservations
     }
 
     func requestVideoAccess() async -> CameraAuthorization {
         permissionRequestCount += 1
-        return authorizationResponse
+        currentAuthorization = permissionResult
+        return currentAuthorization
     }
 
-    func previewSource(for pocket: PocketDevice) -> (any CameraPreviewSource)? {
-        previewSourceRequestCount += 1
-        return configuredPreviewSource
+    func currentVideoAuthorization() -> CameraAuthorization {
+        authorizationReadCount += 1
+        return currentAuthorization
+    }
+
+    func cameraMatch(for pocket: PocketDevice) -> CameraMatch {
+        cameraMatchRequestCount += 1
+        switch configuredCameraMatchStatus {
+        case .single:
+            guard let configuredPreviewSource else {
+                return .none
+            }
+            return .single(configuredPreviewSource)
+        case .none, .notChecked:
+            return .none
+        case .multiple:
+            return .multiple
+        }
+    }
+
+    func setCameraMatchStatus(_ status: CameraMatchStatus) {
+        configuredCameraMatchStatus = status
     }
 
     func inspectStandardControls(
@@ -1254,6 +1637,12 @@ private actor FakeTransport: UVCTransporting {
     private var activeConnection: UVCTransportConnection?
     private var retiredThroughGeneration: UInt64 = 0
     private var writesEnabled = false
+    private let configuredDirectUVCAvailability: DirectUVCAvailability
+    private var availabilityChecks = 0
+
+    init(directUVCAvailability: DirectUVCAvailability = .unknown) {
+        configuredDirectUVCAvailability = directUVCAvailability
+    }
 
     func activate(_ connection: UVCTransportConnection) {
         operations.append(.activate(connection))
@@ -1283,6 +1672,14 @@ private actor FakeTransport: UVCTransporting {
         if let invalidationGate {
             await invalidationGate.wait()
         }
+    }
+
+    func availability(for connection: UVCTransportConnection) -> DirectUVCAvailability {
+        availabilityChecks += 1
+        guard activeConnection == connection else {
+            return .unknown
+        }
+        return configuredDirectUVCAvailability
     }
 
     func setWritesEnabled(_ enabled: Bool, for connection: UVCTransportConnection) {
@@ -1366,6 +1763,10 @@ private actor FakeTransport: UVCTransporting {
 
     func isWriteLatchEnabled() -> Bool {
         writesEnabled
+    }
+
+    func availabilityCheckCount() -> Int {
+        availabilityChecks
     }
 
     private func responseBytes(for request: UVCRequest, expectedLength: Int) -> [UInt8] {
@@ -1726,6 +2127,10 @@ private actor ScriptedTransport: UVCTransporting {
     func invalidate() {}
 
     func invalidate(upTo generation: UInt64) {}
+
+    func availability(for connection: UVCTransportConnection) -> DirectUVCAvailability {
+        .unknown
+    }
 
     func setWritesEnabled(_ enabled: Bool, for connection: UVCTransportConnection) {}
 
