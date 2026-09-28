@@ -16,6 +16,16 @@ struct PocketControlLabApp: App {
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
+        Window("Set Up Camera", id: "onboarding") {
+            OnboardingView(
+                session: appLifecycle.session,
+                completion: appLifecycle.onboardingCompletion
+            )
+        }
+        .defaultSize(width: 720, height: 760)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
         MenuBarExtra {
             MenuBarContent(session: appLifecycle.session)
         } label: {
@@ -60,19 +70,19 @@ private struct MenuBarContent: View {
 
         Divider()
 
-        switch presentation.nextAction {
-        case .refreshDetection:
+        if presentation.nextAction == .refreshDetection {
             Button("Refresh Detection", systemImage: "arrow.clockwise") {
                 session.refreshPassiveDetection()
             }
             .accessibilityHint("Performs one additional passive USB detection scan.")
-
-            Divider()
-
-            diagnosticsButton
-        case .openDiagnostics, nil:
-            diagnosticsButton
         }
+
+        Button("Set Up Camera", systemImage: "camera.badge.ellipsis") {
+            openWindow(id: "onboarding")
+        }
+        .accessibilityHint("Opens guided camera setup. Camera permission is requested only after you select Allow Camera Access.")
+
+        diagnosticsButton
 
         Divider()
 
@@ -119,6 +129,7 @@ private struct MenuBarSeverityDot: View {
 @MainActor
 private final class AppLifecycleOwner: NSObject, NSApplicationDelegate {
     let session = DeviceSession()
+    let onboardingCompletion = OnboardingCompletionState()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let workspaceNotifications = NSWorkspace.shared.notificationCenter

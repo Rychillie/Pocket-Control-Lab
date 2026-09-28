@@ -214,6 +214,156 @@ struct PocketControlLabTests {
         )
     }
 
+    @Test("Onboarding maps typed connection evidence to safe, identifier-free results")
+    func onboardingPresentationMapsConnectionOutcomes() {
+        func presentation(
+            phase: PassiveDiscoveryPhase = .active,
+            identification: PocketIdentification? = .confirmedPocket4VIDPID,
+            disconnected: Bool = false,
+            authorization: CameraAuthorization = .authorized,
+            match: CameraMatchStatus = .single,
+            directUVC: DirectUVCAvailability = .unknown
+        ) -> OnboardingConnectionPresentation {
+            let evidence = PocketConnectionEvidence(
+                discoveryPhase: phase,
+                identification: identification,
+                didDisconnectAfterConnection: disconnected,
+                cameraAuthorization: authorization,
+                cameraMatchStatus: match,
+                directUVCAvailability: directUVC,
+                connectionGeneration: 12,
+                directUVCAvailabilityGeneration: directUVC == .blocked ? 12 : nil
+            )
+            return OnboardingConnectionPresentation(
+                connection: PocketConnectionPresentationState(evidence: evidence),
+                cameraMatchStatus: match
+            )
+        }
+
+        let cases: [(String, OnboardingConnectionPresentation, OnboardingConnectionStatus)] = [
+            ("searching", presentation(phase: .starting), .searching),
+            ("no camera", presentation(identification: nil), .connectCamera),
+            ("disconnected", presentation(identification: nil, disconnected: true), .disconnected),
+            ("unsupported family", presentation(identification: .djiOsmoPocketFamily), .unsupportedPocketFamily),
+            ("permission needed", presentation(authorization: .notDetermined, match: .notChecked), .cameraPermissionNeeded),
+            ("permission denied", presentation(authorization: .denied, match: .notChecked), .cameraPermissionUnavailable),
+            ("permission restricted", presentation(authorization: .restricted, match: .notChecked), .cameraPermissionUnavailable),
+            ("multiple cameras", presentation(match: .multiple), .multipleMatchingCameras),
+            ("video not visible", presentation(match: .none), .videoDeviceNotVisible),
+            ("checking visibility", presentation(match: .notChecked), .checkingVideoVisibility),
+            ("video visible", presentation(match: .single), .videoDeviceVisible),
+            ("UVC availability does not change video visibility", presentation(match: .single, directUVC: .blocked), .videoDeviceVisible),
+        ]
+
+        for (name, result, expectedStatus) in cases {
+            #expect(result.status == expectedStatus, "\(name) status")
+            #expect(!result.title.contains("0x"), "\(name) title has no USB identifiers")
+            #expect(!result.detail.contains("registry"), "\(name) detail has no registry identifiers")
+        }
+
+        #expect(presentation(identification: nil).canRefreshDetection)
+        #expect(presentation(match: .none).canRefreshDetection)
+        #expect(!presentation(match: .single).canRefreshDetection)
+    }
+
+    @Test("Onboarding permission is explicitly requested and never starts preview or UVC")
+    @MainActor
+    func onboardingPermissionActionStaysSeparateFromPreviewAndUVC() async {
+        let fixture = makeFixture(
+            cameraAuthorization: .notDetermined,
+            permissionResult: .authorized,
+            cameraMatchStatus: .single
+        )
+        let device = verifiedPocket(registryID: 799)
+
+        fixture.session.startPassiveDiscovery()
+        fixture.monitorFactory.latestMonitor?.emit(device)
+        #expect(await waitForDevice(fixture.session, registryID: device.registryID))
+
+        for _ in 0..<3 {
+            let result = OnboardingConnectionPresentation(
+                connection: fixture.session.connectionPresentation,
+                cameraMatchStatus: fixture.session.cameraMatchStatus
+            )
+            #expect(result.status == .cameraPermissionNeeded)
+        }
+        #expect(fixture.camera.permissionRequestCount == 0)
+        #expect(fixture.camera.cameraMatchRequestCount == 0)
+        #expect(fixture.preview.startCount == 0)
+
+        fixture.session.requestCameraPermission()
+        #expect(await waitForCameraPermissionRequest(fixture.camera))
+        await drainTasks()
+
+        #expect(fixture.camera.permissionRequestCount == 1)
+        #expect(fixture.session.cameraAuthorization == .authorized)
+        #expect(fixture.camera.cameraMatchRequestCount > 0)
+        #expect(fixture.preview.startCount == 0)
+        #expect(!fixture.session.isPreviewRunning)
+        #expect((await fixture.transport.requestSnapshot()).isEmpty)
+        #expect((await fixture.transport.activatedConnections()).isEmpty)
+        #expect(await fixture.standardInspector?.inspectionCount() == 0)
+        #expect(await fixture.extensionInspector?.inspectionCount() == 0)
+
+        fixture.session.stopPassiveDiscovery()
+    }
+
+    @Test("Denied or restricted onboarding permission keeps USB detection active without retries")
+    @MainActor
+    func deniedOnboardingPermissionRetainsUSBDetection() async {
+        for authorization in [CameraAuthorization.denied, .restricted] {
+            let fixture = makeFixture(
+                cameraAuthorization: .notDetermined,
+                permissionResult: authorization
+            )
+            let device = verifiedPocket(registryID: authorization == .denied ? 800 : 801)
+
+            fixture.session.startPassiveDiscovery()
+            fixture.monitorFactory.latestMonitor?.emit(device)
+            #expect(await waitForDevice(fixture.session, registryID: device.registryID))
+
+            fixture.session.requestCameraPermission()
+            #expect(await waitForCameraPermissionRequest(fixture.camera))
+            await drainTasks()
+
+            #expect(fixture.session.isPocketConnected)
+            #expect(fixture.session.cameraAuthorization == authorization)
+            #expect(fixture.session.connectionPresentation.kind == .cameraAccessUnavailable)
+            #expect(fixture.camera.permissionRequestCount == 1)
+            #expect(fixture.preview.startCount == 0)
+            #expect((await fixture.transport.requestSnapshot()).isEmpty)
+            #expect((await fixture.transport.activatedConnections()).isEmpty)
+
+            fixture.session.refreshPassiveDetection()
+            await drainTasks()
+            #expect(fixture.camera.permissionRequestCount == 1)
+            #expect(fixture.session.isPocketConnected)
+            fixture.session.stopPassiveDiscovery()
+        }
+    }
+
+    @Test("Onboarding completion persists only its Boolean preference")
+    @MainActor
+    func onboardingCompletionPersistsOnlyCompletionFlag() throws {
+        let suiteName = "PocketControlLabTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let completion = OnboardingCompletionState(defaults: defaults)
+        #expect(!completion.hasCompletedOnboarding)
+        #expect(defaults.persistentDomain(forName: suiteName)?.isEmpty ?? true)
+
+        completion.markCompleted()
+
+        #expect(completion.hasCompletedOnboarding)
+        let persistedValues = defaults.persistentDomain(forName: suiteName) ?? [:]
+        #expect(Set(persistedValues.keys) == Set([OnboardingCompletionState.storageKey]))
+        #expect(persistedValues[OnboardingCompletionState.storageKey] as? Bool == true)
+        #expect(OnboardingCompletionState(defaults: defaults).hasCompletedOnboarding)
+    }
+
     @Test("The first empty passive scan and Refresh Detection remain presentation-only")
     @MainActor
     func passiveStatusFirstEmptyScanAndRefreshAreReadOnly() async {

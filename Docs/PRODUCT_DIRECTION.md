@@ -24,19 +24,21 @@ approval, and a privacy/security design.
 An operator should be able to:
 
 1. Connect a Pocket 4 in Webcam Mode.
-2. See a clear passive connection state without a camera prompt or background
-   UVC probe.
-3. Explicitly choose to start preview, grant camera access if macOS requests
-   it, and see the resulting preview status.
-4. Know whether the app has a verified control profile or has merely detected
+2. Open **Set Up Camera** from the menu bar and see privacy guidance, USB
+   Webcam Mode instructions, and the live result from passive discovery.
+3. Deliberately grant camera access from the explained onboarding action when
+   they want local preview; this permission action does not start preview.
+4. See a clear passive connection state without a background UVC probe.
+5. Explicitly choose to start preview and see the resulting preview status.
+6. Know whether the app has a verified control profile or has merely detected
    an unsupported Pocket-family device.
-5. Explicitly refresh a read-only inspection to see each control's supported
+7. Explicitly refresh a read-only inspection to see each control's supported
    range, current value, and safety state.
-6. Deliberately unlock writes and make a controlled Zoom, Pan, Tilt, or Roll
+8. Deliberately unlock writes and make a controlled Zoom, Pan, Tilt, or Roll
    adjustment.
-7. See what was requested, what the camera returned, and a reminder to confirm
+9. See what was requested, what the camera returned, and a reminder to confirm
    the visible physical/digital effect.
-8. Export a privacy-aware diagnostic if something behaves unexpectedly.
+10. Export a privacy-aware diagnostic if something behaves unexpectedly.
 
 The experience should be calm and legible rather than clever: clear states,
 predictable failure, no hidden background movement, and no claim that a
@@ -66,8 +68,10 @@ currently connected device identity.
 ### Explicit consent and safe lifecycle
 
 Launch and wake perform passive IORegistry discovery only. Camera permission
-and preview begin only after an operator requests preview; read-only UVC
-inspection begins only after an operator refreshes it. Locking, disconnect,
+is requested only after an operator selects **Allow Camera Access** in
+onboarding or explicitly requests preview. Preview begins only after an
+operator requests preview; read-only UVC inspection begins only after an
+operator refreshes it. Locking, disconnect,
 re-enumeration, sleep, termination, and stopping discovery converge on one
 safe teardown that disables writes, cancels pending work, rejects stale
 results, invalidates the transport, and stops preview where required. Nothing
@@ -77,7 +81,9 @@ automatically resumes preview, inspection, or writes after wake.
 
 The product is local-first. Identifiers and raw diagnostic payloads are kept
 out of default exports, and no data leaves the Mac unless an operator chooses
-to save or copy it.
+to save or copy it. Finishing onboarding stores only a Boolean completion
+preference; it does not store device identity, permission results, or
+connection state.
 
 ### Honest compatibility
 
@@ -109,7 +115,8 @@ paths or a single session.
 
 The project began as a USB/UVC investigation lab. It now has a working local
 foundation: one app-scoped `DeviceSession`, passive discovery at launch,
-operator-initiated AVFoundation preview, manual read-only UVC inspection,
+resumable user-initiated onboarding, operator-initiated AVFoundation preview,
+manual read-only UVC inspection,
 guarded standard UVC controls, a read-only DJI Extension Unit inspector,
 detailed logging, and privacy-aware exports. UI surfaces ask the shared
 session for semantic actions; they do not own a monitor, preview session, or

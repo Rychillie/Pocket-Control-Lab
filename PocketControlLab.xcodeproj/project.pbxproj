@@ -38,6 +38,8 @@
 		A10000000000000000000114 /* LogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000215 /* LogView.swift */; };
 		A10000000000000000000115 /* CameraAccessing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000218 /* CameraAccessing.swift */; };
 		A10000000000000000000116 /* PocketConnectionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000219 /* PocketConnectionPresentation.swift */; };
+		A10000000000000000000117 /* OnboardingPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000224 /* OnboardingPresentation.swift */; };
+		A10000000000000000000118 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000225 /* OnboardingView.swift */; };
 		A10000000000000000000120 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000220 /* AVFoundation.framework */; };
 		A10000000000000000000121 /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000221 /* CoreMedia.framework */; };
 		A10000000000000000000122 /* CoreMediaIO.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000222 /* CoreMediaIO.framework */; };
@@ -76,6 +78,8 @@
 		A10000000000000000000221 /* CoreMedia.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMedia.framework; path = System/Library/Frameworks/CoreMedia.framework; sourceTree = SDKROOT; };
 		A10000000000000000000222 /* CoreMediaIO.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMediaIO.framework; path = System/Library/Frameworks/CoreMediaIO.framework; sourceTree = SDKROOT; };
 		A10000000000000000000223 /* IOKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IOKit.framework; path = System/Library/Frameworks/IOKit.framework; sourceTree = SDKROOT; };
+		A10000000000000000000224 /* OnboardingPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingPresentation.swift; sourceTree = "<group>"; };
+		A10000000000000000000225 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A20000000000000000000200 /* PocketControlLabTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PocketControlLabTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000201 /* PocketControlLabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketControlLabTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -152,6 +156,7 @@
 				A10000000000000000000204 /* UVCControl.swift */,
 				A10000000000000000000205 /* ExtensionUnitSnapshot.swift */,
 				A10000000000000000000219 /* PocketConnectionPresentation.swift */,
+				A10000000000000000000224 /* OnboardingPresentation.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -197,6 +202,7 @@
 				A10000000000000000000213 /* UVCControlsView.swift */,
 				A10000000000000000000214 /* ExtensionUnitView.swift */,
 				A10000000000000000000215 /* LogView.swift */,
+				A10000000000000000000225 /* OnboardingView.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -352,6 +358,8 @@
 				A10000000000000000000114 /* LogView.swift in Sources */,
 				A10000000000000000000115 /* CameraAccessing.swift in Sources */,
 				A10000000000000000000116 /* PocketConnectionPresentation.swift in Sources */,
+				A10000000000000000000117 /* OnboardingPresentation.swift in Sources */,
+				A10000000000000000000118 /* OnboardingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
