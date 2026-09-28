@@ -29,8 +29,12 @@ redact those raw payloads and potentially identifying diagnostic details by
 default. The operator must turn on **Include raw Extension Unit data and
 sensitive diagnostic details in copied/saved logs** to export them.
 
-The app does not persist logs, camera frames, snapshots, USB descriptors, or
-settings automatically. Saving is an explicit user action through the macOS
+The app does not automatically persist logs, camera frames, snapshots, USB
+descriptors, device identifiers, or permission results. If the operator selects
+**Finish Setup Guide**, the app stores one Boolean indicating that the guide
+was completed. Reopening the guide always shows current live connection state;
+the completion flag does not indicate that a camera is connected or ready.
+Saving investigation data remains an explicit user action through the macOS
 save panel.
 
 The command-line inspectors under `Tools/PocketInspector` redact product,

@@ -23,7 +23,7 @@ visual humana.
 | Preview | `PocketControlLab/Camera` | `AVCaptureDevice`, `AVCaptureSession` e `AVCaptureVideoPreviewLayer` em SwiftUI |
 | USB | `PocketControlLab/USB` | leitura do IORegistry, ponte UVC estritamente validada, controles padrão e XU |
 | Investigação | `PocketControlLab/Investigation` | log local e snapshots/diff |
-| UI | `PocketControlLab/UI` | views que solicitam intenções semânticas, sem possuir monitor, preview ou transporte |
+| UI | `PocketControlLab/UI` | views que solicitam intenções semânticas, incluindo onboarding, sem possuir monitor, preview ou transporte |
 
 O `DeviceSession` é `@MainActor`, observável e com escopo do app; todas as
 scenes recebem a mesma sessão. O monitor USB faz polling leve de propriedades
@@ -72,12 +72,18 @@ a outra câmera conectada.
 
 ## Status de conexão e menu bar
 
-`PocketConnectionPresentationState` é a única projeção de status usada pela
+`PocketConnectionPresentationState` é a projeção de status usada pela
 menu bar e pelo cabeçalho de Diagnostics. Ela deriva texto, símbolo SF,
 severidade visual, próxima ação segura e rótulo conciso para VoiceOver a partir
 da fase de descoberta passiva, perfil USB, histórico de desconexão da execução,
 autorização de câmera sem prompt, visibilidade AVFoundation somente-leitura e
 resultado já armazenado da inspeção direta UVC.
+
+`OnboardingConnectionPresentation` converte essa evidência tipada em estados
+simples para a janela Set Up Camera: busca, desconexão, Pocket não suportada,
+permissão pendente ou indisponível, múltiplas câmeras, vídeo não visível e vídeo
+visível. O status ignora a disponibilidade UVC, que não determina se a câmera
+está visível para vídeo.
 
 As views não consultam IORegistry, AVFoundation, logs, preview ou a ponte UVC
 para adivinhar a conexão. Renderizar o estado não pede TCC, não inicia preview,
@@ -85,12 +91,20 @@ não abre transporte e não faz requests UVC. O indicador visual de severidade �
 suplementar: o símbolo, o título e o rótulo de acessibilidade comunicam o
 estado sem depender de cor.
 
-As únicas ações da menu bar são **Refresh Detection**, que solicita um novo
-snapshot ao monitor passivo já existente, e **Open Diagnostics**, que abre a
-janela de laboratório. Nenhuma delas inicia inspeção UVC ou preview. A
-disponibilidade UVC direta permanece `unknown` até uma inspeção somente-leitura
-iniciada explicitamente pelo operador; o resultado armazenado é associado à
-geração da conexão atual e é descartado em desconexão ou reenumeração.
+As ações da menu bar incluem **Refresh Detection**, que solicita um novo
+snapshot ao monitor passivo existente, **Set Up Camera**, que abre o onboarding,
+e **Open Diagnostics**, que abre a janela de laboratório. Abrir o onboarding
+apenas apresenta o estado atual. A permissão é solicitada somente depois de o
+operador ler a explicação e escolher **Allow Camera Access**; isso atualiza a
+visibilidade AVFoundation, sem iniciar preview ou inspeção UVC. A recuperação
+de permissão negada ou restrita mostra o caminho manual **System Settings →
+Privacy & Security → Camera**, sem tentativas automáticas.
+
+A conclusão explícita do guia persiste somente um Booleano. Nenhum estado de
+conexão, permissão ou identidade do dispositivo é salvo; reabrir o onboarding
+mostra o estado vivo da sessão compartilhada. A disponibilidade UVC direta
+permanece `unknown` até uma inspeção somente-leitura iniciada pelo operador e
+fica associada à geração da conexão atual.
 
 ## APIs usadas
 
@@ -110,11 +124,11 @@ geração da conexão atual e é descartado em desconexão ou reenumeração.
 3. Conecte a Pocket 4 por USB-C e selecione **Webcam Mode** na câmera.
 4. Execute o app. Ele inicia somente a descoberta passiva, sem solicitar
    permissão, iniciar preview ou fazer requests UVC.
-5. Use o status da menu bar ou o cabeçalho de Diagnostics para confirmar a
-   evidência de conexão apresentada pelo `DeviceSession`; os detalhes USB
-   publicados pelo IORegistry permanecem no Diagnostics.
-6. Se desejar preview, escolha **Start Preview**; aceite a permissão de câmera
-   somente se o macOS a solicitar após essa ação.
+5. Abra **Set Up Camera** para ler as instruções de Webcam Mode e o resultado
+   passivo atual. Escolha **Allow Camera Access** somente depois da explicação;
+   isso não inicia preview.
+6. Se desejar preview, escolha **Start Preview** nos Diagnostics; a permissão
+   também pode ser concedida explicitamente pelo onboarding.
 7. Use **Refresh Read-Only Inspection** para iniciar uma inspeção UVC somente-leitura
    manual. Desbloqueie writes apenas quando estiver pronto para observar a
    câmera e registrar o resultado.

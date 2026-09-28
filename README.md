@@ -50,12 +50,12 @@ Read the full [product direction and roadmap](Docs/PRODUCT_DIRECTION.md).
   profile evidence, non-prompting camera authorization, read-only camera
   visibility, and any cached direct-UVC inspection result without exposing
   hardware identifiers or causing platform work merely to render a status.
-- The menu bar offers only safe context actions: **Refresh Detection** asks the
-  existing passive monitor for a fresh IORegistry snapshot, and **Open
-  Diagnostics** opens the laboratory window. It never requests camera access,
-  starts preview, or opens the UVC transport. Direct-UVC availability remains
-  unknown until the operator explicitly starts the existing read-only
-  inspection.
+- The menu bar offers **Set Up Camera**, a guided window that explains USB
+  Webcam Mode and camera permission, plus **Refresh Detection** and **Open
+  Diagnostics**. Opening onboarding reads the shared session only. The camera
+  permission prompt appears only after the operator selects **Allow Camera
+  Access**; that action refreshes video visibility but does not start preview
+  or inspect UVC controls.
 - A **verified Pocket 4 control profile** requires the known `VID 2CA3` / `PID
   0023` pair and an observed normalized `OsmoPocket4` product token.
 - Other DJI Osmo Pocket-family devices can be shown as detected, but they are
@@ -67,7 +67,8 @@ Read the full [product direction and roadmap](Docs/PRODUCT_DIRECTION.md).
 - **Refresh Read-Only Inspection** explicitly runs safe, read-only UVC inspection for
   Zoom Absolute, Pan/Tilt Absolute, and Roll Absolute. macOS driver ownership
   can safely prevent direct access; no inspection runs merely because the app
-  launched or a device connected.
+  launched or a device connected. Direct-UVC availability remains unknown
+  until the operator explicitly starts this inspection.
 - UVC writes remain off until an operator explicitly unlocks them, and only
   the three whitelisted standard Camera Terminal controls can use `SET_CUR`.
 - DJI Extension Unit selectors 1–3 are inspected read-only with `GET_INFO`,
@@ -114,6 +115,8 @@ App lifecycle owner
 ```
 
 The UI never owns a monitor, preview session, transport, or raw USB request.
+Onboarding reads typed state from the shared session and sends only explicit
+permission or passive-refresh intents.
 The low-level bridge has a strict request whitelist, and `DeviceSession` adds
 explicit operator intent, range validation, connection identity, and
 disconnect guards above it.
@@ -151,9 +154,11 @@ absent.
 
 ## Privacy
 
-The app has no account, cloud service, or automatic persistence. It does not
-read USB serial numbers. USB locations and camera unique IDs are used only in
-memory where necessary for matching and are not displayed or exported.
+The app has no account, cloud service, or telemetry. It does not read USB
+serial numbers. USB locations and camera unique IDs are used only in memory
+where necessary for matching and are not displayed or exported. When the
+operator finishes onboarding, the app stores only a Boolean completion flag;
+it does not persist connection, device, or permission state.
 
 The on-screen log can contain raw DJI Extension Unit bytes for local analysis.
 Copied and saved investigations redact those bytes and potentially identifying
