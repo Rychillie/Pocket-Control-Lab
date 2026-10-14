@@ -143,3 +143,55 @@ When a snapshot diff is useful to share, describe changed byte offsets and their
 - Is the visible result physical gimbal movement, digital PTZ, no effect, or something that depends on camera state?
 - What disconnect and re-enumeration behavior is safe and predictable?
 - Which read-only Extension Unit bytes change with a manually altered camera setting, without assigning semantics too early?
+
+## USB connection-route investigation
+
+### EXP-2026-10-13-USB-ROUTE-PREPARATION
+
+| Field | Record |
+| --- | --- |
+| Status | `code-build-verified`; physical comparison remains `inconclusive` |
+| Scope | Temporary local probe of published IORegistry properties and relationships; no app API or UI change |
+| App revision | `cc3ff9150057` |
+| macOS / architecture | macOS 27.0.1 / Apple silicon |
+| Automated validation | Swift 6 compilation with warnings treated as errors; 56 synthetic scenarios passed without live registry access |
+| Passive preflight | No matching Pocket visible through registered USB-host-device discovery at the time of the check |
+| Physical connection / Webcam Mode | Not established; no operator declaration was recorded |
+| Requests and camera operations | No USB/UVC request, interface/user-client open, camera permission, preview or write |
+| Privacy | Output contains only fixed aggregate categories and property types; no serials, Location IDs, registry IDs, port names, raw paths, parent product strings or raw topology |
+| Current classification | Unknown; neither modern Direct nor Via hub/dock is established |
+| Remaining uncertainty | Hardware/operator setup is required for the four repeated physical observations below |
+
+Synthetic validation covers known root-hub exclusion, hub function versus
+external attachment, external/tunnelled controllers, missing or malformed
+properties, ambiguous parents, identity aliases, cycles, 32-entry depth bounds,
+failed/invalidated/changing ancestry, reference cleanup, candidate ambiguity,
+CLI declarations and privacy-safe output. Successful matching with a null
+iterator is treated as no matches; failed registry reads remain distinct.
+
+The historical [Apple root-hub implementation](https://github.com/apple-oss-distributions/IOUSBFamily/blob/IOUSBFamily-560.4.2/IOUSBFamily/Classes/IOUSBRootHubDevice.cpp#L169)
+uses a controller's exact CFString `Card Type == Built-in` and a PCI provider's
+CFBoolean tunnel veto. This reference does not establish modern host-controller
+classification. A hub-class function alone does not prove an external hub, and
+absence of a hub does not prove direct attachment to the Mac.
+
+| Step | Required operator-confirmed setup | Result |
+| --- | --- | --- |
+| 1 | Direct USB-C, Webcam Mode | Not run |
+| 2 | Generic hub/dock, Webcam Mode | Not run |
+| 3 | Direct USB-C, Webcam Mode | Not run |
+| 4 | Same generic hub/dock, Webcam Mode | Not run |
+
+For this route-only experiment, keep one verified Pocket connected and use
+only the passive registry probe. Reconnect between steps; record revision,
+macOS/architecture, the operator-known generic connection and reviewed
+human-readable findings. Do not use the control-write procedure above.
+Hardware observations and product support must not be inferred from the
+synthetic tests or this preparation record.
+
+Before enabling a positive route result, document the exact class/property
+checks, accepted types, root-hub exclusion, external/built-in evidence and
+failure fallbacks. If the permitted facts cannot distinguish the setups,
+record the blocker and retain Unknown. Issue #8 remains pending this evidence;
+local probe sources, binaries and JSON artifacts are not published with this
+log.
